@@ -4,7 +4,8 @@
  *
  * Keeps upstream sources intact while swapping the OpenAI realtime STT module
  * for the pure REST Lite adapter. Premium sources are never added as entry
- * points, so this build does not require the private premium submodule.
+ * points, and premium-only resolver seams are replaced with Lite stubs, so this
+ * build does not require the private premium submodule.
  */
 const { build } = require('esbuild');
 const path = require('path');
@@ -14,11 +15,17 @@ const rootDir = path.resolve(__dirname, '..');
 const electronDir = path.join(rootDir, 'electron');
 const outDir = path.join(rootDir, 'dist-electron');
 const liteStt = path.join(electronDir, 'audio', 'LiteOpenAICompatibleSTT.ts');
+const liteCompanySearchResolver = path.join(electronDir, 'lite', 'resolveCompanySearchProvider.ts');
+const upstreamCompanySearchResolver = path.join(electronDir, 'services', 'resolveCompanySearchProvider.ts');
 
 const SKIP_DIR_PARTS = [
   `${path.sep}__tests__${path.sep}`,
   `${path.sep}visionBenchmark${path.sep}`,
 ];
+
+const SKIP_ENTRY_FILES = new Set([
+  upstreamCompanySearchResolver,
+]);
 
 function findTs(dir) {
   const out = [];
@@ -26,7 +33,7 @@ function findTs(dir) {
     const full = path.join(dir, entry.name);
     if (SKIP_DIR_PARTS.some((part) => full.includes(part))) continue;
     if (entry.isDirectory()) out.push(...findTs(full));
-    else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) out.push(full);
+    else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts') && !SKIP_ENTRY_FILES.has(full)) out.push(full);
   }
   return out;
 }
@@ -39,6 +46,15 @@ const liteAliases = {
     buildApi.onResolve({ filter: /OpenAIStreamingSTT$/ }, (args) => {
       if (args.kind === 'entry-point') return null;
       return { path: liteStt };
+    });
+
+    // Several otherwise-free features share this resolver, but the upstream
+    // implementation statically references premium search-provider classes.
+    // Lite keeps the call sites and replaces only that premium seam with the
+    // same null contract used when no search provider is configured.
+    buildApi.onResolve({ filter: /resolveCompanySearchProvider$/ }, (args) => {
+      if (args.kind === 'entry-point') return null;
+      return { path: liteCompanySearchResolver };
     });
   },
 };
