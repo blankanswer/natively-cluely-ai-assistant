@@ -28,7 +28,38 @@ window.addEventListener('unhandledrejection', (event) => {
 console.log('[renderer] main.tsx evaluating');
 
 const THEME_CACHE_KEY = 'natively_resolved_theme';
+const LITE_CN_INIT_KEY = 'natively_lite_cn_initialized_v1';
+const LANGUAGE_STORAGE_KEY = 'natively_lang';
 const launcherIsolation = new URLSearchParams(window.location.search).get('isolate');
+
+/**
+ * Lite CN defaults are deliberately first-run only. Existing users keep their
+ * explicit choices, and every setting remains editable from Settings afterwards.
+ *
+ * The upstream app already supports OpenAI-compatible custom STT base URLs and
+ * API keys. Selecting the OpenAI provider here makes that REST-capable path the
+ * default instead of Google Cloud, while `chinese` maps to zh-CN / zh in the
+ * shared recognition-language table.
+ */
+function applyLiteCnFirstRunDefaults(): void {
+  try {
+    if (!localStorage.getItem(LANGUAGE_STORAGE_KEY)) {
+      localStorage.setItem(LANGUAGE_STORAGE_KEY, 'zh');
+    }
+
+    if (localStorage.getItem(LITE_CN_INIT_KEY)) return;
+    localStorage.setItem(LITE_CN_INIT_KEY, '1');
+
+    void window.electronAPI?.setRecognitionLanguage?.('chinese').catch(() => {});
+    void window.electronAPI?.setAiResponseLanguage?.('Chinese').catch(() => {});
+    void window.electronAPI?.setSttProvider?.('openai').catch(() => {});
+  } catch {
+    // Sandboxed/test renderers may not expose localStorage or Electron IPC.
+    // LanguageProvider already has a safe fallback, so startup should continue.
+  }
+}
+
+applyLiteCnFirstRunDefaults();
 
 if (launcherIsolation === 'shell') {
   // eslint-disable-next-line no-console
