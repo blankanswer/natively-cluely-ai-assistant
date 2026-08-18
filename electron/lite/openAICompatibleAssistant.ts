@@ -15,6 +15,12 @@ type AssistantConfig = {
   model: string;
 };
 
+type StreamDiagnostics = {
+  sawReasoning: boolean;
+};
+
+const LIVE_TTFC_BUDGET_MS = 7_000;
+
 function mimeForFile(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
@@ -47,13 +53,35 @@ function isDashScopeHybridThinkingModel(config: AssistantConfig): boolean {
     const isDashScope = host.endsWith('aliyuncs.com') && (
       host.includes('dashscope') || host.includes('.maas.')
     );
-    // Qwen 3.x hybrid-thinking models can spend seconds emitting only
-    // reasoning_content. Natively's live UI intentionally displays answer text,
-    // not hidden reasoning, so Lite opts out for low-latency interactive use.
     return isDashScope && /^qwen3(?:[.\-]|$)/i.test(config.model);
   } catch {
     return false;
   }
+}
+
+function isOpenAIStyleReasoningModel(model: string): boolean {
+  // This intentionally matches compatible aliases such as gpt-5.6-terra.
+  // The user's gateway can still choose how it maps the field upstream.
+  return /^(?:gpt-5(?:[.\-]|$)|o1(?:[.\-]|$)|o3(?:[.\-]|$)|o4(?:[.\-]|$))/i.test(model.trim());
+}
+
+function reasoningTuning(config: AssistantConfig): {
+  fields: Record<string, unknown>;
+  label: string;
+} {
+  if (isDashScopeHybridThinkingModel(config)) {
+    // DashScope Qwen hybrid thinking: disable hidden reasoning for the live
+    // meeting path so final answer content starts well inside the 7s TTFC cap.
+    return { fields: { enable_thinking: false }, label: 'Qwen thinking off' };
+  }
+  if (isOpenAIStyleReasoningModel(config.model)) {
+    // GPT-5/o-series compatible gateways commonly accept reasoning_effort.
+    // Low is the best default for a live copilot: the application values time
+    // to first FINAL content more than hidden chain-of-thought depth.
+    return { fields: { reasoning_effort: 'low' }, label: 'reasoning_effort=low' };
+  }
+  // Do not send vendor-specific knobs to arbitrary compatible endpoints.
+  return { fields: {}, label: 'compatibility default' };
 }
 
 function requestHeaders(config: AssistantConfig): Record<string, string> {
@@ -67,15 +95,13 @@ function requestBody(
   messages: ChatMessage[],
   opts: { stream: boolean; maxTokens: number },
 ): Record<string, unknown> {
+  const tuning = reasoningTuning(config);
   return {
     model: config.model,
     messages,
     stream: opts.stream,
     max_tokens: opts.maxTokens,
-    // DashScope exposes enable_thinking as a top-level HTTP request-body field.
-    // Disable it only for the compatible Qwen 3.x endpoint we can identify;
-    // generic OpenAI-compatible gateways never receive a vendor-only field.
-    ...(isDashScopeHybridThinkingModel(config) ? { enable_thinking: false } : {}),
+    ...tuning.fields,
   };
 }
 
@@ -194,6 +220,7 @@ export async function* streamLiteAssistant(
     maxTokens?: number;
     signal?: AbortSignal;
     timeoutMs?: number;
+    diagnostics?: StreamDiagnostics;
   },
 ): AsyncGenerator<string, void, unknown> {
   const config = currentConfig(cm, args.modelId);
@@ -224,7 +251,10 @@ export async function* streamLiteAssistant(
     try {
       const json = JSON.parse(payload);
       const delta = json?.choices?.[0]?.delta;
-      if (typeof delta?.reasoning_content === 'string' && delta.reasoning_content) sawReasoning = true;
+      if (typeof delta?.reasoning_content === 'string' && delta.reasoning_content) {
+        sawReasoning = true;
+        if (args.diagnostics) args.diagnostics.sawReasoning = true;
+      }
       const content = delta?.content;
       return typeof content === 'string' && content ? content : null;
     } catch {
@@ -379,29 +409,65 @@ export async function testLiteAssistantConnection(): Promise<{
   endpoint?: string;
   model?: string;
   latencyMs?: number;
+  ttfcMs?: number;
+  withinLiveBudget?: boolean;
+  sawReasoning?: boolean;
+  reasoningMode?: string;
   preview?: string;
   error?: string;
 }> {
   const cm = CredentialsManager.getInstance();
+  const config = currentConfig(cm);
+  const tuning = reasoningTuning(config);
+  const diagnostics: StreamDiagnostics = { sawReasoning: false };
   const started = Date.now();
+  let firstContentAt = 0;
+  let preview = '';
+
   try {
-    const result = await completeLiteAssistant(cm, {
+    // Probe the same SSE path the meeting UI actually uses. We deliberately do
+    // NOT stop at HTTP 200 or at the first role/reasoning chunk: success means
+    // the gateway produced real delta.content, which is exactly what Natively's
+    // 7s first-useful deadline waits for.
+    for await (const chunk of streamLiteAssistant(cm, {
       userMessage: 'Reply with exactly: OK',
       systemPrompt: 'You are a connectivity probe. Follow the user instruction exactly.',
       maxTokens: 32,
       timeoutMs: 20_000,
-    });
+      diagnostics,
+    })) {
+      if (!firstContentAt) firstContentAt = Date.now();
+      preview += chunk;
+      if (preview.trim().length >= 2) break;
+    }
+
+    if (!firstContentAt) throw new Error('Stream ended before any final answer content was received.');
+    const ttfcMs = firstContentAt - started;
+    const withinLiveBudget = ttfcMs <= LIVE_TTFC_BUDGET_MS;
+    const budgetText = withinLiveBudget
+      ? `TTFC ${ttfcMs} ms / 7s live budget OK`
+      : `TTFC ${ttfcMs} ms > 7s live budget; meeting requests may fall back`;
+    const reasoningText = diagnostics.sawReasoning ? 'reasoning_content observed' : 'no reasoning_content before answer';
+
     return {
       success: true,
-      endpoint: result.endpoint,
-      model: result.model,
-      latencyMs: Date.now() - started,
-      preview: result.text.trim().slice(0, 120),
+      endpoint: config.endpoint,
+      model: config.model,
+      latencyMs: ttfcMs,
+      ttfcMs,
+      withinLiveBudget,
+      sawReasoning: diagnostics.sawReasoning,
+      reasoningMode: tuning.label,
+      preview: `${budgetText} · stream=true · ${tuning.label} · ${reasoningText} · reply=${preview.trim().slice(0, 80)}`,
     };
   } catch (error: any) {
     return {
       success: false,
+      endpoint: config.endpoint,
+      model: config.model,
       latencyMs: Date.now() - started,
+      sawReasoning: diagnostics.sawReasoning,
+      reasoningMode: tuning.label,
       error: error?.message || String(error),
     };
   }
