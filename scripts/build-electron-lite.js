@@ -16,7 +16,9 @@ const electronDir = path.join(rootDir, 'electron');
 const outDir = path.join(rootDir, 'dist-electron');
 const liteStt = path.join(electronDir, 'audio', 'LiteOpenAICompatibleSTT.ts');
 const liteCompanySearchResolver = path.join(electronDir, 'lite', 'resolveCompanySearchProvider.ts');
+const liteIpcHandlers = path.join(electronDir, 'lite', 'ipcHandlers.ts');
 const upstreamCompanySearchResolver = path.join(electronDir, 'services', 'resolveCompanySearchProvider.ts');
+const upstreamIpcHandlers = path.join(electronDir, 'ipcHandlers.ts');
 
 const SKIP_DIR_PARTS = [
   `${path.sep}__tests__${path.sep}`,
@@ -55,6 +57,18 @@ const liteAliases = {
     buildApi.onResolve({ filter: /resolveCompanySearchProvider$/ }, (args) => {
       if (args.kind === 'entry-point') return null;
       return { path: liteCompanySearchResolver };
+    });
+
+    // Main's ./ipcHandlers import is replaced by a Lite wrapper that initializes
+    // upstream handlers and then overrides only the STT connection probe. The
+    // wrapper itself imports ../ipcHandlers to reach the original implementation;
+    // do not rewrite that import or it would recurse back into itself.
+    buildApi.onResolve({ filter: /(?:^|\/)ipcHandlers$/ }, (args) => {
+      if (args.kind === 'entry-point') return null;
+      if (path.resolve(args.importer) === path.resolve(liteIpcHandlers)) return null;
+      const resolved = path.resolve(path.dirname(args.importer), args.path);
+      if (resolved === upstreamIpcHandlers) return { path: liteIpcHandlers };
+      return null;
     });
   },
 };
