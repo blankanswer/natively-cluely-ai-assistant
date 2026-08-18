@@ -4,6 +4,7 @@ import {
   Bot,
   Box,
   CheckCircle2,
+  Folder,
   Headphones,
   KeyRound,
   Keyboard,
@@ -16,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { KeyRecorder } from '../components/ui/KeyRecorder';
+import { SkillsSettings } from '../components/settings/SkillsSettings';
 
 interface Props {
   isOpen: boolean;
@@ -26,7 +28,7 @@ interface Props {
 }
 
 type Status = 'idle' | 'saving' | 'testing' | 'success' | 'error';
-type LiteTab = 'assistant' | 'speech' | 'general' | 'keybinds';
+type LiteTab = 'assistant' | 'speech' | 'general' | 'keybinds' | 'skills';
 type AudioDevice = { id: string; name: string };
 type LiteKeybind = { id: string; label: string; accelerator: string; isGlobal: boolean };
 
@@ -36,6 +38,7 @@ const cardClass = 'rounded-xl border border-border-subtle bg-bg-card p-4';
 function tabForInitial(value?: string): LiteTab {
   if (value === 'audio') return 'speech';
   if (value === 'keybinds') return 'keybinds';
+  if (value === 'skills') return 'skills';
   if (value === 'ai-providers' || value === 'natively-api') return 'assistant';
   return 'general';
 }
@@ -46,7 +49,7 @@ function previewTranscriptionEndpoint(value: string): string {
     const url = new URL(raw);
     let pathname = url.pathname.replace(/\/+$/, '');
     if (/\/audio\/transcriptions$/i.test(pathname)) {
-      // Complete endpoint: keep it exactly once.
+      // Complete endpoint.
     } else if (/\/v\d+$/i.test(pathname)) {
       pathname += '/audio/transcriptions';
     } else if (!pathname || pathname === '/') {
@@ -69,7 +72,6 @@ function normalizeAssistantBaseUrl(value: string): string {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error('Assistant Base URL 仅支持 http:// 或 https://。');
   }
-
   let pathname = url.pathname.replace(/\/+$/, '');
   pathname = pathname.replace(/\/chat\/completions$/i, '');
   if (!pathname || pathname === '/') pathname = '/v1';
@@ -101,20 +103,18 @@ function acceleratorToKeys(accelerator: string): string[] {
 }
 
 function recordedKeysToAccelerator(keys: string[]): string {
-  const parts = keys.map((key) => {
+  return keys.map((key) => {
     if (key === '⌘') return 'Command';
     if (key === '⌃') return 'Control';
     if (key === '⌥') return 'Alt';
     if (key === '⇧') return 'Shift';
     return key;
-  });
-  return parts.join('+');
+  }).join('+');
 }
 
 export default function LiteSettingsOverlay({ isOpen, onClose, initialTab }: Props) {
   const [activeTab, setActiveTab] = useState<LiteTab>(() => tabForInitial(initialTab));
 
-  // STT
   const [endpoint, setEndpoint] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('whisper-1');
@@ -124,16 +124,12 @@ export default function LiteSettingsOverlay({ isOpen, onClose, initialTab }: Pro
   const [selectedInput, setSelectedInput] = useState('');
   const [selectedOutput, setSelectedOutput] = useState('');
 
-  // Assistant. Lite deliberately reuses the existing LiteLLM/OpenAI-compatible
-  // transport underneath; unlike the upstream provider matrix, this surface is
-  // one explicit BYOK endpoint + one explicit model.
   const [assistantBaseUrl, setAssistantBaseUrl] = useState('');
   const [assistantApiKey, setAssistantApiKey] = useState('');
   const [assistantModel, setAssistantModel] = useState('');
   const [assistantHasStoredConfig, setAssistantHasStoredConfig] = useState(false);
   const [currentAssistantLabel, setCurrentAssistantLabel] = useState('未配置');
 
-  // General / keybinds
   const [themeMode, setThemeModeState] = useState<'system' | 'light' | 'dark'>('system');
   const [overlayOpacity, setOverlayOpacityState] = useState(() => {
     const raw = Number(localStorage.getItem('natively_overlay_opacity'));
@@ -189,12 +185,9 @@ export default function LiteSettingsOverlay({ isOpen, onClose, initialTab }: Pro
           window.electronAPI?.getCurrentLlmConfig?.(),
           window.electronAPI?.getThemeMode?.(),
         ]);
-
         setEndpoint(typeof creds?.openAiSttBaseUrl === 'string' ? creds.openAiSttBaseUrl : '');
         setHasStoredKey(Boolean(creds?.hasSttOpenaiKey));
-        if (typeof creds?.groqSttModel === 'string' && creds.groqSttModel.trim()) {
-          setModel(creds.groqSttModel.trim());
-        }
+        if (typeof creds?.groqSttModel === 'string' && creds.groqSttModel.trim()) setModel(creds.groqSttModel.trim());
 
         const storedAssistantBase = typeof creds?.litellmBaseURL === 'string' ? creds.litellmBaseURL : '';
         setAssistantBaseUrl(storedAssistantBase);
@@ -207,18 +200,75 @@ export default function LiteSettingsOverlay({ isOpen, onClose, initialTab }: Pro
         } else {
           setCurrentAssistantLabel((llm as any)?.displayName || modelId || '未配置');
         }
-
-        if (theme?.mode === 'system' || theme?.mode === 'light' || theme?.mode === 'dark') {
-          setThemeModeState(theme.mode);
-        }
+        if (theme?.mode === 'system' || theme?.mode === 'light' || theme?.mode === 'dark') setThemeModeState(theme.mode);
       } catch {
-        // Keep defaults; settings can still be edited.
+        // Keep editable defaults.
       }
       await Promise.all([loadDevices(), loadKeybinds()]);
     })();
   }, [isOpen]);
 
   if (!isOpen) return null;
+
+  const persistAssistantConfig = async () => {
+    const baseURL = normalizeAssistantBaseUrl(assistantBaseUrl);
+    if (!baseURL) throw new Error('请填写 Assistant Base URL。');
+    const rawModel = assistantModel.trim();
+    if (!rawModel) throw new Error('请填写 Assistant Model。');
+    const modelId = `litellm/${rawModel}`;
+
+    const cfgResult = await window.electronAPI?.setLitellmConfig?.({
+      apiKey: assistantApiKey.trim(),
+      baseURL,
+    });
+    if (cfgResult && cfgResult.success === false) throw new Error(cfgResult.error || 'Assistant 配置保存失败');
+
+    const allowResult = await window.electronAPI?.setCloudEnabledModels?.('litellm', [modelId]);
+    if (allowResult && allowResult.success === false) throw new Error(allowResult.error || 'Assistant 模型启用失败');
+
+    const modelResult = await window.electronAPI?.setDefaultModel?.(modelId);
+    if (modelResult && modelResult.success === false) throw new Error(modelResult.error || 'Assistant 默认模型切换失败');
+
+    setAssistantBaseUrl(baseURL);
+    setAssistantHasStoredConfig(true);
+    setCurrentAssistantLabel(rawModel);
+    return { baseURL, rawModel };
+  };
+
+  const saveAssistant = async () => {
+    setStatus('saving');
+    setMessage('');
+    try {
+      const { baseURL, rawModel } = await persistAssistantConfig();
+      setAssistantApiKey('');
+      setStatus('success');
+      setMessage(`Assistant 已切换到 ${rawModel} · ${baseURL}/chat/completions`);
+    } catch (error: any) {
+      setStatus('error');
+      setMessage(error?.message || 'Assistant 配置保存失败');
+    }
+  };
+
+  const testAssistant = async () => {
+    setStatus('testing');
+    setMessage('');
+    try {
+      const { baseURL, rawModel } = await persistAssistantConfig();
+      // Lite main overrides the existing OpenAI test bridge to probe the exact
+      // configured custom Assistant endpoint/model. Reusing this existing bridge
+      // avoids adding a second preload surface solely for Lite.
+      const result = await window.electronAPI?.testLlmConnection?.('openai', '') as any;
+      if (!result?.success) throw new Error(result?.error || 'Assistant 连接测试失败');
+      setAssistantApiKey('');
+      setStatus('success');
+      const latency = typeof result.latencyMs === 'number' ? ` · ${result.latencyMs} ms` : '';
+      const preview = result.preview ? ` · 返回：${result.preview}` : '';
+      setMessage(`Assistant 测试成功 · ${result.model || rawModel} · ${result.endpoint || `${baseURL}/chat/completions`}${latency}${preview}`);
+    } catch (error: any) {
+      setStatus('error');
+      setMessage(error?.message || 'Assistant 连接测试失败');
+    }
+  };
 
   const validateStt = () => {
     if (effectiveEndpoint === '无效 URL') throw new Error('STT Endpoint 必须是完整的 http:// 或 https:// URL。');
@@ -270,50 +320,9 @@ export default function LiteSettingsOverlay({ isOpen, onClose, initialTab }: Pro
     }
   };
 
-  const saveAssistant = async () => {
-    setStatus('saving');
-    setMessage('');
-    try {
-      const baseURL = normalizeAssistantBaseUrl(assistantBaseUrl);
-      if (!baseURL) throw new Error('请填写 Assistant Base URL。');
-      const rawModel = assistantModel.trim();
-      if (!rawModel) throw new Error('请填写 Assistant Model。');
-      const modelId = `litellm/${rawModel}`;
-
-      const cfgResult = await window.electronAPI?.setLitellmConfig?.({
-        apiKey: assistantApiKey.trim(),
-        baseURL,
-      });
-      if (cfgResult && cfgResult.success === false) throw new Error(cfgResult.error || 'Assistant 配置保存失败');
-
-      // LiteLLM is opt-in in the upstream router: an empty allow-list means no
-      // model is selectable. Persist exactly this user-selected model so it also
-      // survives restart instead of falling back to a stale Codex/Gemini model.
-      const allowResult = await window.electronAPI?.setCloudEnabledModels?.('litellm', [modelId]);
-      if (allowResult && allowResult.success === false) throw new Error(allowResult.error || 'Assistant 模型启用失败');
-
-      const modelResult = await window.electronAPI?.setDefaultModel?.(modelId);
-      if (modelResult && modelResult.success === false) throw new Error(modelResult.error || 'Assistant 默认模型切换失败');
-
-      setAssistantBaseUrl(baseURL);
-      setAssistantHasStoredConfig(true);
-      setAssistantApiKey('');
-      setCurrentAssistantLabel(rawModel);
-      setStatus('success');
-      setMessage(`Assistant 已切换到 ${rawModel} · Chat Completions · ${baseURL}/chat/completions`);
-    } catch (error: any) {
-      setStatus('error');
-      setMessage(error?.message || 'Assistant 配置保存失败');
-    }
-  };
-
   const updateTheme = async (mode: 'system' | 'light' | 'dark') => {
     setThemeModeState(mode);
-    try {
-      await window.electronAPI?.setThemeMode?.(mode);
-    } catch {
-      // UI will be corrected on next open if main rejected it.
-    }
+    try { await window.electronAPI?.setThemeMode?.(mode); } catch { /* reload reconciles */ }
   };
 
   const updateOpacity = (value: number) => {
@@ -354,6 +363,7 @@ export default function LiteSettingsOverlay({ isOpen, onClose, initialTab }: Pro
     { id: 'speech', label: '语音与音频', icon: <Mic size={15} /> },
     { id: 'general', label: '外观与行为', icon: <SlidersHorizontal size={15} /> },
     { id: 'keybinds', label: '快捷键', icon: <Keyboard size={15} /> },
+    { id: 'skills', label: 'Skills', icon: <Folder size={15} /> },
   ];
 
   return (
@@ -362,11 +372,9 @@ export default function LiteSettingsOverlay({ isOpen, onClose, initialTab }: Pro
         <header className="flex shrink-0 items-center justify-between border-b border-border-subtle px-5 py-4">
           <div>
             <h2 className="text-base font-semibold text-text-primary">Natively Lite CN 设置</h2>
-            <p className="mt-1 text-xs text-text-tertiary">中文优先 · BYOK · STT + OpenAI-compatible Assistant</p>
+            <p className="mt-1 text-xs text-text-tertiary">中文优先 · BYOK · Chat Completions Assistant + REST STT</p>
           </div>
-          <button onClick={onClose} className="rounded-lg p-2 text-text-secondary hover:bg-bg-item-active hover:text-text-primary" aria-label="关闭">
-            <X size={18} />
-          </button>
+          <button onClick={onClose} className="rounded-lg p-2 text-text-secondary hover:bg-bg-item-active hover:text-text-primary" aria-label="关闭"><X size={18} /></button>
         </header>
 
         <div className="flex min-h-0 flex-1">
@@ -378,13 +386,12 @@ export default function LiteSettingsOverlay({ isOpen, onClose, initialTab }: Pro
                   onClick={() => { setActiveTab(tab.id); setMessage(''); setStatus('idle'); }}
                   className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-medium transition-colors ${activeTab === tab.id ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:bg-bg-input hover:text-text-primary'}`}
                 >
-                  {tab.icon}
-                  {tab.label}
+                  {tab.icon}{tab.label}
                 </button>
               ))}
             </div>
             <div className="mt-4 rounded-lg border border-border-subtle bg-bg-input p-3 text-[11px] leading-5 text-text-tertiary">
-              Lite 保留的是运行必需设置。付费、Trial、Natively Cloud、Local Whisper/RAG 管理不放进此版本。
+              Lite 保留 Assistant、STT、设备、快捷键、外观与 Skills。Calendar、付费/Trial、Natively Cloud、Local Whisper/RAG 管理不进入 Lite 主设置。
             </div>
           </aside>
 
@@ -396,41 +403,31 @@ export default function LiteSettingsOverlay({ isOpen, onClose, initialTab }: Pro
                     <div className="rounded-lg bg-bg-item-active p-2 text-accent-primary"><Bot size={18} /></div>
                     <div>
                       <h3 className="text-sm font-semibold text-text-primary">自定义 Assistant API</h3>
-                      <p className="mt-1 text-xs leading-5 text-text-tertiary">当前 Lite 使用 OpenAI-compatible <strong className="text-text-secondary">Chat Completions</strong>。保存后会立即替换旧的 Codex CLI / Gemini 默认模型。</p>
+                      <p className="mt-1 text-xs leading-5 text-text-tertiary">本轮只支持 OpenAI-compatible <strong className="text-text-secondary">Chat Completions</strong>。文本与截图/视觉请求都优先走这里选择的模型。</p>
                     </div>
                   </div>
-
                   <div className="space-y-4">
                     <label className="block">
                       <span className="mb-1.5 flex items-center gap-2 text-xs font-medium text-text-secondary"><Server size={13} /> Base URL</span>
                       <input className={inputClass} value={assistantBaseUrl} onChange={(e) => setAssistantBaseUrl(e.target.value)} placeholder="https://api.example.com/v1" />
-                      <span className="mt-1.5 block text-[11px] text-text-tertiary">可填 Base URL，也可粘贴完整 <code>/chat/completions</code> 地址；保存时会归一化为 Base URL。</span>
+                      <span className="mt-1.5 block text-[11px] text-text-tertiary">也可以粘贴完整 <code>/chat/completions</code>；保存时会归一化。</span>
                       <span className={`mt-1.5 block break-all rounded-md px-2 py-1 text-[11px] ${effectiveAssistantEndpoint === '无效 URL' ? 'bg-red-500/10 text-red-400' : 'bg-bg-input text-text-secondary'}`}>实际请求：{effectiveAssistantEndpoint}</span>
                     </label>
-
                     <label className="block">
                       <span className="mb-1.5 flex items-center gap-2 text-xs font-medium text-text-secondary"><KeyRound size={13} /> API Key</span>
-                      <input className={inputClass} type="password" autoComplete="off" value={assistantApiKey} onChange={(e) => setAssistantApiKey(e.target.value)} placeholder={assistantHasStoredConfig ? '••••••••••••（已保存；留空即保留，亦支持无 Key 网关）' : 'sk-...（无 Key 网关可留空）'} />
+                      <input className={inputClass} type="password" autoComplete="off" value={assistantApiKey} onChange={(e) => setAssistantApiKey(e.target.value)} placeholder={assistantHasStoredConfig ? '••••••••••••（已保存；留空即保留）' : 'sk-...'} />
                     </label>
-
                     <label className="block">
                       <span className="mb-1.5 flex items-center gap-2 text-xs font-medium text-text-secondary"><Box size={13} /> Model</span>
-                      <input className={inputClass} value={assistantModel} onChange={(e) => setAssistantModel(e.target.value)} placeholder="例如 Qwen/Qwen3-32B、gpt-4.1-mini 或网关自定义模型名" />
+                      <input className={inputClass} value={assistantModel} onChange={(e) => setAssistantModel(e.target.value)} placeholder="例如 qwen3.7-plus / gpt-4.1-mini / 自定义模型名" />
                     </label>
-
-                    <div className="rounded-lg border border-border-subtle bg-bg-input px-3 py-2.5 text-xs text-text-secondary">
-                      当前 Overlay 模型：<strong className="text-text-primary">{currentAssistantLabel}</strong>
-                    </div>
-                    <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2.5 text-[11px] leading-5 text-amber-500">
-                      Responses API 暂未接入。这里不会假装兼容：目前只发送标准 <code>/v1/chat/completions</code>；Responses 会作为独立 transport adapter 后续加入。
-                    </div>
+                    <div className="rounded-lg border border-border-subtle bg-bg-input px-3 py-2.5 text-xs text-text-secondary">当前 Overlay 模型：<strong className="text-text-primary">{currentAssistantLabel}</strong></div>
+                    <div className="rounded-lg border border-border-subtle bg-bg-input px-3 py-2.5 text-[11px] leading-5 text-text-tertiary">测试按钮会保存当前输入，再用与会议相同的 Chat Completions transport 发一个真实请求；成功时显示 endpoint、model、延迟与简短返回。</div>
                   </div>
                 </div>
-
-                <div className="flex justify-end">
-                  <button onClick={saveAssistant} disabled={status === 'saving'} className="rounded-lg bg-accent-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">
-                    {status === 'saving' ? '保存中…' : '保存并切换 Assistant'}
-                  </button>
+                <div className="flex justify-end gap-2">
+                  <button onClick={testAssistant} disabled={status === 'testing' || status === 'saving'} className="rounded-lg border border-border-subtle bg-bg-input px-4 py-2 text-sm font-medium text-text-primary hover:bg-bg-item-active disabled:opacity-50">{status === 'testing' ? '测试中…' : '测试 Assistant'}</button>
+                  <button onClick={saveAssistant} disabled={status === 'testing' || status === 'saving'} className="rounded-lg bg-accent-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">{status === 'saving' ? '保存中…' : '保存并切换 Assistant'}</button>
                 </div>
               </div>
             )}
@@ -438,144 +435,46 @@ export default function LiteSettingsOverlay({ isOpen, onClose, initialTab }: Pro
             {activeTab === 'speech' && (
               <div className="space-y-4">
                 <div className={cardClass}>
-                  <div className="mb-4 flex items-start gap-3">
-                    <div className="rounded-lg bg-bg-item-active p-2 text-accent-primary"><Mic size={18} /></div>
-                    <div>
-                      <h3 className="text-sm font-semibold text-text-primary">OpenAI-compatible 语音识别</h3>
-                      <p className="mt-1 text-xs leading-5 text-text-tertiary">16 kHz WAV → multipart/form-data；不使用 OpenAI Realtime。测试连接与会议转写走同一请求实现。</p>
-                    </div>
-                  </div>
-
+                  <div className="mb-4 flex items-start gap-3"><div className="rounded-lg bg-bg-item-active p-2 text-accent-primary"><Mic size={18} /></div><div><h3 className="text-sm font-semibold text-text-primary">OpenAI-compatible 语音识别</h3><p className="mt-1 text-xs leading-5 text-text-tertiary">16 kHz WAV → multipart/form-data；不使用 OpenAI Realtime。</p></div></div>
                   <div className="space-y-4">
-                    <label className="block">
-                      <span className="mb-1.5 flex items-center gap-2 text-xs font-medium text-text-secondary"><Server size={13} /> Endpoint / Base URL</span>
-                      <input className={inputClass} value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="https://stt.example.com/v1 或完整 /audio/transcriptions" />
-                      <span className="mt-1.5 block text-[11px] text-text-tertiary">完整 <code>/audio/transcriptions</code> 地址不会再次拼接。</span>
-                      <span className={`mt-1.5 block break-all rounded-md px-2 py-1 text-[11px] ${effectiveEndpoint === '无效 URL' ? 'bg-red-500/10 text-red-400' : 'bg-bg-input text-text-secondary'}`}>实际请求 URL：{effectiveEndpoint}</span>
-                    </label>
-
-                    <label className="block">
-                      <span className="mb-1.5 flex items-center gap-2 text-xs font-medium text-text-secondary"><KeyRound size={13} /> API Key</span>
-                      <input className={inputClass} type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={hasStoredKey ? '••••••••••••（已安全保存，留空即保留）' : 'sk-...'} />
-                      <span className="mt-1.5 block text-[11px] text-text-tertiary">密钥由 Electron safeStorage 加密保存，不写入 localStorage。</span>
-                    </label>
-
-                    <label className="block">
-                      <span className="mb-1.5 flex items-center gap-2 text-xs font-medium text-text-secondary"><Box size={13} /> Model</span>
-                      <input className={inputClass} value={model} onChange={(e) => setModel(e.target.value)} placeholder="FunAudioLLM/SenseVoiceSmall / whisper-1 / 自定义模型名" />
-                    </label>
+                    <label className="block"><span className="mb-1.5 flex items-center gap-2 text-xs font-medium text-text-secondary"><Server size={13} /> Endpoint / Base URL</span><input className={inputClass} value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="https://stt.example.com/v1 或完整 /audio/transcriptions" /><span className={`mt-1.5 block break-all rounded-md px-2 py-1 text-[11px] ${effectiveEndpoint === '无效 URL' ? 'bg-red-500/10 text-red-400' : 'bg-bg-input text-text-secondary'}`}>实际请求 URL：{effectiveEndpoint}</span></label>
+                    <label className="block"><span className="mb-1.5 flex items-center gap-2 text-xs font-medium text-text-secondary"><KeyRound size={13} /> API Key</span><input className={inputClass} type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={hasStoredKey ? '••••••••••••（已安全保存，留空即保留）' : 'sk-...'} /></label>
+                    <label className="block"><span className="mb-1.5 flex items-center gap-2 text-xs font-medium text-text-secondary"><Box size={13} /> Model</span><input className={inputClass} value={model} onChange={(e) => setModel(e.target.value)} placeholder="FunAudioLLM/SenseVoiceSmall / whisper-1 / 自定义模型名" /></label>
                   </div>
                 </div>
-
                 <div className={cardClass}>
-                  <div className="mb-3 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Headphones size={16} className="text-text-secondary" />
-                      <h3 className="text-sm font-semibold text-text-primary">录音设备</h3>
-                    </div>
-                    <button onClick={() => void loadDevices()} className="text-[11px] text-accent-primary hover:opacity-80">刷新设备</button>
-                  </div>
+                  <div className="mb-3 flex items-center justify-between"><div className="flex items-center gap-2"><Headphones size={16} className="text-text-secondary" /><h3 className="text-sm font-semibold text-text-primary">录音设备</h3></div><button onClick={() => void loadDevices()} className="text-[11px] text-accent-primary hover:opacity-80">刷新设备</button></div>
                   <div className="grid gap-3 md:grid-cols-2">
-                    <label className="block">
-                      <span className="mb-1.5 flex items-center gap-2 text-xs text-text-secondary"><Mic size={13} /> 麦克风</span>
-                      <select className={inputClass} value={selectedInput} onChange={(e) => { setSelectedInput(e.target.value); localStorage.setItem('preferredInputDeviceId', e.target.value); }}>
-                        {inputDevices.length === 0 && <option value="">系统默认 / 未检测到</option>}
-                        {inputDevices.map((d) => <option key={d.id} value={d.id}>{d.name || d.id}</option>)}
-                      </select>
-                    </label>
-                    <label className="block">
-                      <span className="mb-1.5 flex items-center gap-2 text-xs text-text-secondary"><Speaker size={13} /> 扬声器 / 系统音频设备</span>
-                      <select className={inputClass} value={selectedOutput} onChange={(e) => { setSelectedOutput(e.target.value); localStorage.setItem('preferredOutputDeviceId', e.target.value); }}>
-                        {outputDevices.length === 0 && <option value="">系统默认 / 未检测到</option>}
-                        {outputDevices.map((d) => <option key={d.id} value={d.id}>{d.name || d.id}</option>)}
-                      </select>
-                    </label>
+                    <label className="block"><span className="mb-1.5 flex items-center gap-2 text-xs text-text-secondary"><Mic size={13} /> 麦克风</span><select className={inputClass} value={selectedInput} onChange={(e) => { setSelectedInput(e.target.value); localStorage.setItem('preferredInputDeviceId', e.target.value); }}>{inputDevices.length === 0 && <option value="">系统默认 / 未检测到</option>}{inputDevices.map((d) => <option key={d.id} value={d.id}>{d.name || d.id}</option>)}</select></label>
+                    <label className="block"><span className="mb-1.5 flex items-center gap-2 text-xs text-text-secondary"><Speaker size={13} /> 扬声器 / 系统音频设备</span><select className={inputClass} value={selectedOutput} onChange={(e) => { setSelectedOutput(e.target.value); localStorage.setItem('preferredOutputDeviceId', e.target.value); }}>{outputDevices.length === 0 && <option value="">系统默认 / 未检测到</option>}{outputDevices.map((d) => <option key={d.id} value={d.id}>{d.name || d.id}</option>)}</select></label>
                   </div>
-                  <p className="mt-3 text-[11px] leading-5 text-text-tertiary">这两项沿用原版的设备偏好键，下一次启动会议时会直接被音频采集链读取。</p>
                 </div>
-
-                <div className="flex justify-end gap-2">
-                  <button onClick={testSpeech} disabled={status === 'testing' || status === 'saving'} className="rounded-lg border border-border-subtle bg-bg-input px-4 py-2 text-sm font-medium text-text-primary hover:bg-bg-item-active disabled:opacity-50">
-                    {status === 'testing' ? '测试中…' : '测试 STT'}
-                  </button>
-                  <button onClick={saveSpeech} disabled={status === 'testing' || status === 'saving'} className="rounded-lg bg-accent-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">
-                    {status === 'saving' ? '保存中…' : '保存语音设置'}
-                  </button>
-                </div>
+                <div className="flex justify-end gap-2"><button onClick={testSpeech} disabled={status === 'testing' || status === 'saving'} className="rounded-lg border border-border-subtle bg-bg-input px-4 py-2 text-sm font-medium text-text-primary hover:bg-bg-item-active disabled:opacity-50">{status === 'testing' ? '测试中…' : '测试 STT'}</button><button onClick={saveSpeech} disabled={status === 'testing' || status === 'saving'} className="rounded-lg bg-accent-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">{status === 'saving' ? '保存中…' : '保存语音设置'}</button></div>
               </div>
             )}
 
             {activeTab === 'general' && (
               <div className="space-y-4">
                 <div className={cardClass}>
-                  <div className="mb-4 flex items-start gap-3">
-                    <div className="rounded-lg bg-bg-item-active p-2 text-accent-primary"><Monitor size={18} /></div>
-                    <div>
-                      <h3 className="text-sm font-semibold text-text-primary">外观</h3>
-                      <p className="mt-1 text-xs text-text-tertiary">Lite 保留原版最常用的主题与会议悬浮窗透明度。</p>
-                    </div>
-                  </div>
-
+                  <div className="mb-4 flex items-start gap-3"><div className="rounded-lg bg-bg-item-active p-2 text-accent-primary"><Monitor size={18} /></div><div><h3 className="text-sm font-semibold text-text-primary">外观</h3><p className="mt-1 text-xs text-text-tertiary">主题与会议悬浮窗透明度。</p></div></div>
                   <div className="space-y-4">
-                    <div>
-                      <div className="mb-2 text-xs font-medium text-text-secondary">主题</div>
-                      <div className="flex gap-2">
-                        {(['system', 'light', 'dark'] as const).map((mode) => (
-                          <button key={mode} onClick={() => void updateTheme(mode)} className={`rounded-lg border px-3 py-2 text-xs ${themeMode === mode ? 'border-accent-primary bg-bg-item-active text-text-primary' : 'border-border-subtle bg-bg-input text-text-secondary hover:text-text-primary'}`}>
-                            {mode === 'system' ? '跟随系统' : mode === 'light' ? '浅色' : '深色'}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <label className="block">
-                      <span className="mb-2 flex items-center justify-between text-xs font-medium text-text-secondary"><span>会议悬浮窗透明度</span><span>{Math.round(overlayOpacity * 100)}%</span></span>
-                      <input type="range" min="0.35" max="1" step="0.01" value={overlayOpacity} onChange={(e) => updateOpacity(Number(e.target.value))} className="w-full" />
-                    </label>
+                    <div><div className="mb-2 text-xs font-medium text-text-secondary">主题</div><div className="flex gap-2">{(['system', 'light', 'dark'] as const).map((mode) => <button key={mode} onClick={() => void updateTheme(mode)} className={`rounded-lg border px-3 py-2 text-xs ${themeMode === mode ? 'border-accent-primary bg-bg-item-active text-text-primary' : 'border-border-subtle bg-bg-input text-text-secondary hover:text-text-primary'}`}>{mode === 'system' ? '跟随系统' : mode === 'light' ? '浅色' : '深色'}</button>)}</div></div>
+                    <label className="block"><span className="mb-2 flex items-center justify-between text-xs font-medium text-text-secondary"><span>会议悬浮窗透明度</span><span>{Math.round(overlayOpacity * 100)}%</span></span><input type="range" min="0.35" max="1" step="0.01" value={overlayOpacity} onChange={(e) => updateOpacity(Number(e.target.value))} className="w-full" /></label>
                   </div>
                 </div>
-
-                <div className={cardClass}>
-                  <h3 className="text-sm font-semibold text-text-primary">Lite 安全行为</h3>
-                  <div className="mt-3 space-y-2 text-xs leading-5 text-text-secondary">
-                    <p>• “不可见”仍使用内容保护，但 Windows Lite 会保留任务栏入口，避免最小化后无法唤醒。</p>
-                    <p>• 鼠标穿透在 Lite 中被安全禁用；不会再出现点击一次后整个悬浮窗永久点不到的状态。</p>
-                    <p>• API Key 继续使用 Electron safeStorage；STT 与 Assistant 密钥都不写 localStorage。</p>
-                  </div>
-                </div>
+                <div className={cardClass}><h3 className="text-sm font-semibold text-text-primary">两个“可见性”概念</h3><div className="mt-3 space-y-2 text-xs leading-5 text-text-secondary"><p>• Launcher 的“可见 / 不可见”只控制<strong className="text-text-primary">能否被截图/屏幕共享捕获</strong>。</p><p>• 会议顶部的 Hide / Show 只控制<strong className="text-text-primary">你自己是否展开会议面板</strong>，与截图保护相互独立。</p><p>• Lite 的 Hide 现在会保留顶部 Show 恢复按钮，不再把整个会议窗口从桌面上永久藏掉。</p></div></div>
               </div>
             )}
 
             {activeTab === 'keybinds' && (
-              <div className="space-y-4">
-                <div className={cardClass}>
-                  <div className="mb-4 flex items-start justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2"><Keyboard size={16} className="text-text-secondary" /><h3 className="text-sm font-semibold text-text-primary">快捷键</h3></div>
-                      <p className="mt-1 text-xs leading-5 text-text-tertiary">保留全局唤醒/隐藏、回答等快捷键，因为它们也是悬浮窗的恢复通道。点击按键组合即可重新录制。</p>
-                    </div>
-                    <button onClick={resetAllKeybinds} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-border-subtle bg-bg-input px-2.5 py-1.5 text-[11px] text-text-secondary hover:text-text-primary"><RotateCcw size={12} /> 恢复默认</button>
-                  </div>
-
-                  <div className="divide-y divide-border-subtle">
-                    {keybinds.map((binding) => (
-                      <div key={binding.id} className="flex items-center justify-between gap-4 py-3">
-                        <div className="min-w-0">
-                          <div className="truncate text-xs font-medium text-text-primary">{binding.label}</div>
-                          <div className="mt-0.5 text-[10px] text-text-tertiary">{binding.isGlobal ? '全局快捷键' : '应用内快捷键'}</div>
-                        </div>
-                        <KeyRecorder currentKeys={acceleratorToKeys(binding.accelerator)} onSave={(keys) => void saveKeybind(binding, keys)} />
-                      </div>
-                    ))}
-                    {keybinds.length === 0 && <div className="py-8 text-center text-xs text-text-tertiary">未读取到快捷键。</div>}
-                  </div>
-                </div>
-              </div>
+              <div className="space-y-4"><div className={cardClass}><div className="mb-4 flex items-start justify-between gap-3"><div><div className="flex items-center gap-2"><Keyboard size={16} className="text-text-secondary" /><h3 className="text-sm font-semibold text-text-primary">快捷键</h3></div><p className="mt-1 text-xs leading-5 text-text-tertiary">保留全局唤醒/隐藏与回答快捷键，作为悬浮窗恢复通道。</p></div><button onClick={resetAllKeybinds} className="flex shrink-0 items-center gap-1.5 rounded-lg border border-border-subtle bg-bg-input px-2.5 py-1.5 text-[11px] text-text-secondary hover:text-text-primary"><RotateCcw size={12} /> 恢复默认</button></div><div className="divide-y divide-border-subtle">{keybinds.map((binding) => <div key={binding.id} className="flex items-center justify-between gap-4 py-3"><div className="min-w-0"><div className="truncate text-xs font-medium text-text-primary">{binding.label}</div><div className="mt-0.5 text-[10px] text-text-tertiary">{binding.isGlobal ? '全局快捷键' : '应用内快捷键'}</div></div><KeyRecorder currentKeys={acceleratorToKeys(binding.accelerator)} onSave={(keys) => void saveKeybind(binding, keys)} /></div>)}{keybinds.length === 0 && <div className="py-8 text-center text-xs text-text-tertiary">未读取到快捷键。</div>}</div></div></div>
             )}
+
+            {activeTab === 'skills' && <SkillsSettings />}
 
             {message && (
               <div className={`mt-4 flex items-start gap-2 rounded-lg border px-3 py-2.5 text-xs ${status === 'error' ? 'border-red-500/20 bg-red-500/10 text-red-400' : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400'}`}>
-                {status === 'error' ? <AlertCircle size={15} className="mt-0.5 shrink-0" /> : <CheckCircle2 size={15} className="mt-0.5 shrink-0" />}
-                <span className="break-all">{message}</span>
+                {status === 'error' ? <AlertCircle size={15} className="mt-0.5 shrink-0" /> : <CheckCircle2 size={15} className="mt-0.5 shrink-0" />}<span className="break-all">{message}</span>
               </div>
             )}
           </main>
