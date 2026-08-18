@@ -1,20 +1,12 @@
 /**
  * Lite CN packaging profile.
  *
- * Goal: keep the existing full Natively build untouched while producing a
- * smaller BYOK-oriented package that does not bundle the local model payload.
- * The native audio capture module is intentionally retained because mic/system
- * loopback capture still depends on it.
- *
- * Build after the normal renderer/electron compilation steps with:
- *   node scripts/package-app.js --config electron-builder.lite.cjs
- *
- * This first Lite profile removes packaged model assets only. ONNX/HuggingFace
- * dependencies remain installed for now because upstream modules still import
- * them from several optional code paths; removing those packages safely is a
- * second-stage refactor rather than a packaging-only change.
+ * This is intentionally independent from the upstream release/signing flow:
+ * - keeps native microphone/system-audio capture
+ * - does not bundle local model payloads
+ * - does not emit updater metadata
+ * - builds only the runner's current architecture in experimental CI
  */
-
 const base = require('./package.json').build;
 
 const isModelsResource = (entry) => {
@@ -22,20 +14,19 @@ const isModelsResource = (entry) => {
   return typeof entry.from === 'string' && /(^|\/)resources\/models\/?$/.test(entry.from.replace(/\\/g, '/'));
 };
 
+const currentArch = process.arch === 'arm64' ? 'arm64' : 'x64';
+
 module.exports = {
   ...base,
   productName: 'Natively Lite CN',
   artifactName: '${productName}-${version}-${os}-${arch}.${ext}',
-  // Lite builds are intended for BYOK/manual distribution. Do not generate the
-  // upstream auto-update metadata/channel files for this fork profile.
   generateUpdatesFilesForAllChannels: false,
+  publish: null,
   extraMetadata: {
     ...(base.extraMetadata || {}),
     nativelyLiteCn: true,
   },
   extraResources: (base.extraResources || []).filter((entry) => !isModelsResource(entry)),
-  // Remove worker/model-specific unpack rules from the Lite package. These are
-  // only useful when the corresponding local model payload is shipped.
   asarUnpack: (base.asarUnpack || []).filter((pattern) => {
     const p = String(pattern);
     return !(
@@ -46,4 +37,17 @@ module.exports = {
       p.includes('rerankerDownloadWorker.js')
     );
   }),
+  mac: {
+    ...(base.mac || {}),
+    identity: null,
+    target: [{ target: 'zip', arch: [currentArch] }],
+  },
+  win: {
+    ...(base.win || {}),
+    target: [{ target: 'nsis', arch: [currentArch] }],
+  },
+  linux: {
+    ...(base.linux || {}),
+    target: [{ target: 'AppImage', arch: [currentArch] }],
+  },
 };
