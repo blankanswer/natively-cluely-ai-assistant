@@ -60,6 +60,24 @@ function keepLiteLauncherRecoverable(appState: AppState): void {
   }
 }
 
+/**
+ * Patch the WindowHelper INSTANCE before the launcher BrowserWindow is created.
+ * This covers the cold-start case where undetectable=true is already persisted:
+ * createLauncherWindow() calls syncLauncherTaskbarForStealth() during creation,
+ * before any renderer can invoke our set-undetectable IPC override.
+ */
+function installLiteTaskbarRecoveryPolicy(appState: AppState): void {
+  if (process.platform !== 'win32') return;
+  const windowHelper = appState.getWindowHelper();
+  const marker = windowHelper as unknown as { __liteTaskbarRecoveryInstalled?: boolean };
+  if (marker.__liteTaskbarRecoveryInstalled) return;
+  marker.__liteTaskbarRecoveryInstalled = true;
+
+  windowHelper.syncLauncherTaskbarForStealth = () => {
+    keepLiteLauncherRecoverable(appState);
+  };
+}
+
 function openLiteSettings(appState: AppState, tab: string): void {
   const launcher = appState.getWindowHelper().getLauncherWindow();
   if (!launcher || launcher.isDestroyed()) return;
@@ -90,6 +108,7 @@ function openLiteSettings(appState: AppState, tab: string): void {
  */
 export function initializeIpcHandlers(appState: AppState): void {
   initializeUpstreamIpcHandlers(appState);
+  installLiteTaskbarRecoveryPolicy(appState);
 
   // -------------------------------------------------------------------------
   // Lite recovery/safety overrides
