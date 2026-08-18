@@ -40,15 +40,114 @@ function makeProbeWav(): Buffer {
 }
 
 /**
+ * Windows Lite must always keep at least one ordinary recovery surface.
+ *
+ * Upstream stealth intentionally removes the launcher from the taskbar and also
+ * hides the tray. That is useful for the commercial stealth workflow, but in a
+ * personal Lite build it creates a lock-out: minimize the launcher while
+ * undetectable is enabled and there is no visible UI left to restore it. Keep
+ * content protection / undetectable behavior, but keep the launcher taskbar
+ * button as the escape hatch.
+ */
+function keepLiteLauncherRecoverable(appState: AppState): void {
+  if (process.platform !== 'win32') return;
+  const launcher = appState.getWindowHelper().getLauncherWindow();
+  if (!launcher || launcher.isDestroyed()) return;
+  try {
+    launcher.setSkipTaskbar(false);
+  } catch (error) {
+    console.warn('[LiteCN] Failed to keep launcher in taskbar:', error);
+  }
+}
+
+function openLiteSettings(appState: AppState, tab: string): void {
+  const launcher = appState.getWindowHelper().getLauncherWindow();
+  if (!launcher || launcher.isDestroyed()) return;
+
+  launcher.webContents.send('settings:open-tab', tab);
+  if (appState.getUndetectable()) {
+    launcher.showInactive();
+    appState.reassertUndetectableStealth();
+  } else {
+    launcher.show();
+    launcher.focus();
+  }
+  keepLiteLauncherRecoverable(appState);
+}
+
+/**
  * Lite wrapper around the upstream IPC surface.
  *
- * We initialize upstream first to retain all app behavior, then replace only
- * `test-stt-connection`. The upstream OpenAI probe had two Lite-breaking
- * assumptions: it appended `/v1/audio/transcriptions` even when a full endpoint
- * was supplied, and it always sent `whisper-1` instead of the user's model.
+ * Upstream is initialized first so the broad app surface remains available.
+ * Lite then replaces only the places where upstream assumptions are unsafe or
+ * misleading for this flavor:
+ *   - STT probe uses the exact same endpoint/model request as live STT;
+ *   - Windows stealth keeps a taskbar recovery path;
+ *   - persistent whole-overlay mouse passthrough is disabled (it otherwise
+ *     makes its own off-switch unclickable);
+ *   - a banner's generic "Open Settings" action opens the real Lite settings
+ *     instead of the tiny legacy quick-settings popover.
  */
 export function initializeIpcHandlers(appState: AppState): void {
   initializeUpstreamIpcHandlers(appState);
+
+  // -------------------------------------------------------------------------
+  // Lite recovery/safety overrides
+  // -------------------------------------------------------------------------
+
+  ipcMain.removeHandler('set-undetectable');
+  ipcMain.handle('set-undetectable', async (_event, state: boolean) => {
+    appState.setUndetectable(Boolean(state));
+    keepLiteLauncherRecoverable(appState);
+    return { success: true, state: appState.getUndetectable() };
+  });
+
+  // `settings:open-tab` is the canonical full SettingsOverlay route. Replacing
+  // it lets us preserve the taskbar escape hatch even after upstream stealth is
+  // reasserted during a showInactive().
+  ipcMain.removeHandler('settings:open-tab');
+  ipcMain.handle('settings:open-tab', async (_event, tab: string) => {
+    openLiteSettings(appState, tab || 'general');
+    return { success: true };
+  });
+
+  // Upstream's `toggle-settings-window` opens a 180px legacy quick-settings
+  // popover. Overlay controls pass coordinates and still benefit from that
+  // compact popup. Warning banners call it with NO coordinates: in Lite that
+  // must open the real settings surface, otherwise "打开设置" appears to do
+  // nothing useful and cannot reach audio/STT configuration.
+  ipcMain.removeHandler('toggle-settings-window');
+  ipcMain.handle('toggle-settings-window', async (_event, payload: { x?: number; y?: number } = {}) => {
+    const { x, y } = payload || {};
+    if (typeof x === 'number' && typeof y === 'number') {
+      appState.settingsWindowHelper.toggleWindow(x, y);
+      return { success: true, surface: 'quick-settings' };
+    }
+    openLiteSettings(appState, 'audio');
+    return { success: true, surface: 'lite-settings', tab: 'audio' };
+  });
+
+  // Whole-window passthrough has no mouse-reachable recovery by construction:
+  // once every overlay/pill/toggle BrowserWindow ignores mouse events, the same
+  // PointerOff button cannot receive the click that would turn it back off.
+  // Lite prioritizes a recoverable UI, so keep the authoritative state false.
+  const forcePassthroughOff = () => {
+    appState.setOverlayMousePassthrough(false);
+    return { success: true, enabled: false, disabledInLite: true };
+  };
+
+  ipcMain.removeHandler('set-overlay-mouse-passthrough');
+  ipcMain.handle('set-overlay-mouse-passthrough', async () => forcePassthroughOff());
+
+  ipcMain.removeHandler('toggle-overlay-mouse-passthrough');
+  ipcMain.handle('toggle-overlay-mouse-passthrough', async () => forcePassthroughOff());
+
+  ipcMain.removeHandler('get-overlay-mouse-passthrough');
+  ipcMain.handle('get-overlay-mouse-passthrough', async () => false);
+
+  // -------------------------------------------------------------------------
+  // OpenAI-compatible REST STT probe
+  // -------------------------------------------------------------------------
 
   ipcMain.removeHandler('test-stt-connection');
   ipcMain.handle(
