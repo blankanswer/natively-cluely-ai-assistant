@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { X, Mic, KeyRound, Server, Box, CheckCircle2, AlertCircle } from 'lucide-react';
 
 interface Props {
@@ -13,6 +13,28 @@ type Status = 'idle' | 'saving' | 'testing' | 'success' | 'error';
 
 const inputClass = 'w-full rounded-lg border border-border-subtle bg-bg-input px-3 py-2.5 text-sm text-text-primary placeholder:text-text-tertiary outline-none focus:border-accent-primary';
 
+function previewTranscriptionEndpoint(value: string): string {
+  const raw = value.trim() || 'https://api.openai.com';
+  try {
+    const url = new URL(raw);
+    let pathname = url.pathname.replace(/\/+$/, '');
+    if (/\/audio\/transcriptions$/i.test(pathname)) {
+      // Complete endpoint: keep it exactly once.
+    } else if (/\/v\d+$/i.test(pathname)) {
+      pathname += '/audio/transcriptions';
+    } else if (!pathname || pathname === '/') {
+      pathname = '/v1/audio/transcriptions';
+    } else {
+      pathname += '/v1/audio/transcriptions';
+    }
+    url.pathname = pathname;
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return '无效 URL';
+  }
+}
+
 export default function LiteSettingsOverlay({ isOpen, onClose }: Props) {
   const [endpoint, setEndpoint] = useState('');
   const [apiKey, setApiKey] = useState('');
@@ -20,6 +42,8 @@ export default function LiteSettingsOverlay({ isOpen, onClose }: Props) {
   const [hasStoredKey, setHasStoredKey] = useState(false);
   const [status, setStatus] = useState<Status>('idle');
   const [message, setMessage] = useState('');
+
+  const effectiveEndpoint = useMemo(() => previewTranscriptionEndpoint(endpoint), [endpoint]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -40,15 +64,21 @@ export default function LiteSettingsOverlay({ isOpen, onClose }: Props) {
 
   if (!isOpen) return null;
 
+  const validate = () => {
+    if (effectiveEndpoint === '无效 URL') throw new Error('Endpoint 必须是完整的 http:// 或 https:// URL。');
+    if (!model.trim()) throw new Error('请填写 STT Model。');
+  };
+
   const save = async () => {
     setStatus('saving');
     setMessage('');
     try {
+      validate();
       await window.electronAPI?.setSttProvider?.('openai');
       await window.electronAPI?.setRecognitionLanguage?.('chinese');
       await window.electronAPI?.setAiResponseLanguage?.('Chinese');
       await window.electronAPI?.setOpenAiSttBaseUrl?.(endpoint.trim());
-      await window.electronAPI?.setGroqSttModel?.(model.trim() || 'whisper-1');
+      await window.electronAPI?.setGroqSttModel?.(model.trim());
       if (apiKey.trim()) {
         const result = await window.electronAPI?.setOpenAiSttApiKey?.(apiKey.trim());
         if (result && result.success === false) throw new Error(result.error || 'API Key 保存失败');
@@ -56,7 +86,7 @@ export default function LiteSettingsOverlay({ isOpen, onClose }: Props) {
         setApiKey('');
       }
       setStatus('success');
-      setMessage('已保存。新的语音识别会使用自定义 REST 端点。');
+      setMessage(`已保存。实际 STT 请求：${effectiveEndpoint} · Model: ${model.trim()}`);
     } catch (error: any) {
       setStatus('error');
       setMessage(error?.message || '保存失败');
@@ -67,15 +97,17 @@ export default function LiteSettingsOverlay({ isOpen, onClose }: Props) {
     setStatus('testing');
     setMessage('');
     try {
-      // Persist endpoint/model first so the main-process test path sees the same configuration.
+      validate();
+      // Persist endpoint/model first so the main-process probe sees exactly the
+      // same configuration the live STT adapter will use.
       await window.electronAPI?.setOpenAiSttBaseUrl?.(endpoint.trim());
-      await window.electronAPI?.setGroqSttModel?.(model.trim() || 'whisper-1');
+      await window.electronAPI?.setGroqSttModel?.(model.trim());
       const key = apiKey.trim() || (hasStoredKey ? '__USE_STORED__' : '');
       if (!key) throw new Error('请先输入 API Key。');
-      const result = await window.electronAPI?.testSttConnection?.('openai', key);
+      const result = await window.electronAPI?.testSttConnection?.('openai', key) as any;
       if (!result?.success) throw new Error(result?.error || '连接测试失败');
       setStatus('success');
-      setMessage('连接测试成功。');
+      setMessage(`连接测试成功 · ${result.endpoint || effectiveEndpoint} · Model: ${result.model || model.trim()}`);
     } catch (error: any) {
       setStatus('error');
       setMessage(error?.message || '连接测试失败');
@@ -101,7 +133,7 @@ export default function LiteSettingsOverlay({ isOpen, onClose }: Props) {
               <div className="rounded-lg bg-bg-item-active p-2 text-accent-primary"><Mic size={18} /></div>
               <div>
                 <h3 className="text-sm font-semibold text-text-primary">自定义语音识别 API</h3>
-                <p className="mt-1 text-xs leading-5 text-text-tertiary">发送 16 kHz WAV 到 multipart/form-data 接口，不使用 OpenAI Realtime/官方音频 SDK。</p>
+                <p className="mt-1 text-xs leading-5 text-text-tertiary">发送 16 kHz WAV 到 multipart/form-data 接口，不使用 OpenAI Realtime/官方音频 SDK。测试连接与实际会议转写共用同一请求实现。</p>
               </div>
             </div>
 
@@ -109,7 +141,10 @@ export default function LiteSettingsOverlay({ isOpen, onClose }: Props) {
               <label className="block">
                 <span className="mb-1.5 flex items-center gap-2 text-xs font-medium text-text-secondary"><Server size={13} /> Endpoint / Base URL</span>
                 <input className={inputClass} value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="https://stt.example.com/v1 或完整 /audio/transcriptions" />
-                <span className="mt-1.5 block text-[11px] text-text-tertiary">留空时使用 api.openai.com；支持直接填写完整 transcription 地址。</span>
+                <span className="mt-1.5 block text-[11px] text-text-tertiary">可填 Base URL，也可直接填写完整 <code>/audio/transcriptions</code> 地址；完整地址不会被重复拼接。</span>
+                <span className={`mt-1.5 block break-all rounded-md px-2 py-1 text-[11px] ${effectiveEndpoint === '无效 URL' ? 'bg-red-500/10 text-red-400' : 'bg-bg-input text-text-secondary'}`}>
+                  实际请求 URL：{effectiveEndpoint}
+                </span>
               </label>
 
               <label className="block">
@@ -120,7 +155,8 @@ export default function LiteSettingsOverlay({ isOpen, onClose }: Props) {
 
               <label className="block">
                 <span className="mb-1.5 flex items-center gap-2 text-xs font-medium text-text-secondary"><Box size={13} /> Model</span>
-                <input className={inputClass} value={model} onChange={(e) => setModel(e.target.value)} placeholder="whisper-1 / faster-whisper-large-v3 / 自定义模型名" />
+                <input className={inputClass} value={model} onChange={(e) => setModel(e.target.value)} placeholder="whisper-1 / FunAudioLLM/SenseVoiceSmall / 自定义模型名" />
+                <span className="mt-1.5 block text-[11px] text-text-tertiary">按原样发送到 multipart 的 <code>model</code> 字段；测试连接不会再替换成 whisper-1。</span>
               </label>
 
               <div className="rounded-lg border border-border-subtle bg-bg-input px-3 py-2.5 text-xs text-text-secondary">
@@ -132,7 +168,7 @@ export default function LiteSettingsOverlay({ isOpen, onClose }: Props) {
           {message && (
             <div className={`flex items-start gap-2 rounded-lg border px-3 py-2.5 text-xs ${status === 'error' ? 'border-red-500/20 bg-red-500/10 text-red-400' : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400'}`}>
               {status === 'error' ? <AlertCircle size={15} className="mt-0.5 shrink-0" /> : <CheckCircle2 size={15} className="mt-0.5 shrink-0" />}
-              <span>{message}</span>
+              <span className="break-all">{message}</span>
             </div>
           )}
 
