@@ -7,6 +7,10 @@ import {
   resolveOpenAICompatibleTranscriptionEndpoint,
   transcribeOpenAICompatibleWav,
 } from './openAICompatibleStt';
+import {
+  installLiteAssistantRuntime,
+  testLiteAssistantConnection,
+} from './openAICompatibleAssistant';
 
 function makeProbeWav(): Buffer {
   const sampleRate = 16_000;
@@ -14,8 +18,6 @@ function makeProbeWav(): Buffer {
   const sampleCount = Math.floor(sampleRate * durationSeconds);
   const pcm = Buffer.alloc(sampleCount * 2);
 
-  // A quiet 440 Hz tone is deterministic and avoids gateways that reject a
-  // completely silent/zero-length probe while still being harmless to STT.
   for (let i = 0; i < sampleCount; i++) {
     const sample = Math.round(Math.sin((2 * Math.PI * 440 * i) / sampleRate) * 1200);
     pcm.writeInt16LE(sample, i * 2);
@@ -40,14 +42,10 @@ function makeProbeWav(): Buffer {
 }
 
 /**
- * Windows Lite must always keep at least one ordinary recovery surface.
- *
- * Upstream stealth intentionally removes the launcher from the taskbar and also
- * hides the tray. That is useful for the commercial stealth workflow, but in a
- * personal Lite build it creates a lock-out: minimize the launcher while
- * undetectable is enabled and there is no visible UI left to restore it. Keep
- * content protection / undetectable behavior, but keep the launcher taskbar
- * button as the escape hatch.
+ * Windows Lite currently keeps the launcher taskbar entry as the guaranteed
+ * recovery surface. The user's preferred end state is tray-only while stealth
+ * is enabled; that change is intentionally deferred until the tray lifecycle is
+ * made authoritative, because removing both surfaces is a lock-out regression.
  */
 function keepLiteLauncherRecoverable(appState: AppState): void {
   if (process.platform !== 'win32') return;
@@ -60,12 +58,6 @@ function keepLiteLauncherRecoverable(appState: AppState): void {
   }
 }
 
-/**
- * Patch the WindowHelper INSTANCE before the launcher BrowserWindow is created.
- * This covers the cold-start case where undetectable=true is already persisted:
- * createLauncherWindow() calls syncLauncherTaskbarForStealth() during creation,
- * before any renderer can invoke our set-undetectable IPC override.
- */
 function installLiteTaskbarRecoveryPolicy(appState: AppState): void {
   if (process.platform !== 'win32') return;
   const windowHelper = appState.getWindowHelper();
@@ -93,22 +85,10 @@ function openLiteSettings(appState: AppState, tab: string): void {
   keepLiteLauncherRecoverable(appState);
 }
 
-/**
- * Lite wrapper around the upstream IPC surface.
- *
- * Upstream is initialized first so the broad app surface remains available.
- * Lite then replaces only the places where upstream assumptions are unsafe or
- * misleading for this flavor:
- *   - STT probe uses the exact same endpoint/model request as live STT;
- *   - Windows stealth keeps a taskbar recovery path;
- *   - persistent whole-overlay mouse passthrough is disabled (it otherwise
- *     makes its own off-switch unclickable);
- *   - a banner's generic "Open Settings" action opens the real Lite settings
- *     instead of the tiny legacy quick-settings popover.
- */
 export function initializeIpcHandlers(appState: AppState): void {
   initializeUpstreamIpcHandlers(appState);
   installLiteTaskbarRecoveryPolicy(appState);
+  installLiteAssistantRuntime(appState);
 
   // -------------------------------------------------------------------------
   // Lite recovery/safety overrides
@@ -121,20 +101,12 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true, state: appState.getUndetectable() };
   });
 
-  // `settings:open-tab` is the canonical full SettingsOverlay route. Replacing
-  // it lets us preserve the taskbar escape hatch even after upstream stealth is
-  // reasserted during a showInactive().
   ipcMain.removeHandler('settings:open-tab');
   ipcMain.handle('settings:open-tab', async (_event, tab: string) => {
     openLiteSettings(appState, tab || 'general');
     return { success: true };
   });
 
-  // Upstream's `toggle-settings-window` opens a 180px legacy quick-settings
-  // popover. Overlay controls pass coordinates and still benefit from that
-  // compact popup. Warning banners call it with NO coordinates: in Lite that
-  // must open the real settings surface, otherwise "打开设置" appears to do
-  // nothing useful and cannot reach audio/STT configuration.
   ipcMain.removeHandler('toggle-settings-window');
   ipcMain.handle('toggle-settings-window', async (_event, payload: { x?: number; y?: number } = {}) => {
     const { x, y } = payload || {};
@@ -146,10 +118,24 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true, surface: 'lite-settings', tab: 'audio' };
   });
 
-  // Whole-window passthrough has no mouse-reachable recovery by construction:
-  // once every overlay/pill/toggle BrowserWindow ignores mouse events, the same
-  // PointerOff button cannot receive the click that would turn it back off.
-  // Lite prioritizes a recoverable UI, so keep the authoritative state false.
+  // NativelyInterface's historic collapse path invokes `hide-window` after its
+  // CSS fade. That also hides the separate TopPill BrowserWindow, so there is no
+  // mouse-reachable Show control to reverse the action. In Lite, an overlay-
+  // initiated hide means "collapse the shell": leave the OS windows alive and
+  // make the transparent shell click-through. Full app hiding still goes through
+  // main-process global/tray window actions, not this renderer collapse call.
+  ipcMain.removeHandler('hide-window');
+  ipcMain.handle('hide-window', async (event) => {
+    const wh = appState.getWindowHelper();
+    const overlay = wh.getOverlayWindow();
+    if (overlay && !overlay.isDestroyed() && overlay.webContents.id === event.sender.id) {
+      wh.setOverlayHoverInteractive(false);
+      return { success: true, collapsedOnly: true };
+    }
+    wh.hideMainWindow();
+    return { success: true, collapsedOnly: false };
+  });
+
   const forcePassthroughOff = () => {
     appState.setOverlayMousePassthrough(false);
     return { success: true, enabled: false, disabledInLite: true };
@@ -163,6 +149,14 @@ export function initializeIpcHandlers(appState: AppState): void {
 
   ipcMain.removeHandler('get-overlay-mouse-passthrough');
   ipcMain.handle('get-overlay-mouse-passthrough', async () => false);
+
+  // -------------------------------------------------------------------------
+  // Assistant probe — exact same direct Chat Completions transport used at run
+  // time in Lite (including the selected model and optional vision payload).
+  // -------------------------------------------------------------------------
+
+  ipcMain.removeHandler('lite:test-assistant-connection');
+  ipcMain.handle('lite:test-assistant-connection', async () => testLiteAssistantConnection());
 
   // -------------------------------------------------------------------------
   // OpenAI-compatible REST STT probe
@@ -188,9 +182,6 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       const cm = CredentialsManager.getInstance();
       const endpointOrBaseUrl = cm.getOpenAiSttBaseUrl();
-      // Lite currently persists this non-secret field through the existing
-      // Groq-model setter for backward compatibility. Unlike the old probe,
-      // always read the user's value instead of hard-coding whisper-1.
       const model = cm.getGroqSttModel().trim() || 'whisper-1';
 
       try {
