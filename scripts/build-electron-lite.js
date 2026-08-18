@@ -67,7 +67,9 @@ const liteAliases = {
       if (args.kind === 'entry-point') return null;
       if (path.resolve(args.importer) === path.resolve(liteIpcHandlers)) return null;
       const resolved = path.resolve(path.dirname(args.importer), args.path);
-      if (resolved === upstreamIpcHandlers) return { path: liteIpcHandlers };
+      if (resolved === upstreamIpcHandlers || `${resolved}.ts` === upstreamIpcHandlers) {
+        return { path: liteIpcHandlers };
+      }
       return null;
     });
   },
