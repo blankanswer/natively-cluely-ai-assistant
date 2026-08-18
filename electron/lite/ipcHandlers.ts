@@ -17,12 +17,10 @@ function makeProbeWav(): Buffer {
   const durationSeconds = 0.35;
   const sampleCount = Math.floor(sampleRate * durationSeconds);
   const pcm = Buffer.alloc(sampleCount * 2);
-
   for (let i = 0; i < sampleCount; i++) {
     const sample = Math.round(Math.sin((2 * Math.PI * 440 * i) / sampleRate) * 1200);
     pcm.writeInt16LE(sample, i * 2);
   }
-
   const wav = Buffer.alloc(44 + pcm.length);
   wav.write('RIFF', 0);
   wav.writeUInt32LE(36 + pcm.length, 4);
@@ -42,20 +40,16 @@ function makeProbeWav(): Buffer {
 }
 
 /**
- * Windows Lite currently keeps the launcher taskbar entry as the guaranteed
- * recovery surface. The user's preferred end state is tray-only while stealth
- * is enabled; that change is intentionally deferred until the tray lifecycle is
- * made authoritative, because removing both surfaces is a lock-out regression.
+ * Keep a guaranteed recovery surface for this iteration. Tray-only stealth is
+ * the preferred end state, but it should replace this only after tray lifecycle
+ * recovery is made authoritative on every cold-start/minimize path.
  */
 function keepLiteLauncherRecoverable(appState: AppState): void {
   if (process.platform !== 'win32') return;
   const launcher = appState.getWindowHelper().getLauncherWindow();
   if (!launcher || launcher.isDestroyed()) return;
-  try {
-    launcher.setSkipTaskbar(false);
-  } catch (error) {
-    console.warn('[LiteCN] Failed to keep launcher in taskbar:', error);
-  }
+  try { launcher.setSkipTaskbar(false); }
+  catch (error) { console.warn('[LiteCN] Failed to keep launcher in taskbar:', error); }
 }
 
 function installLiteTaskbarRecoveryPolicy(appState: AppState): void {
@@ -64,16 +58,12 @@ function installLiteTaskbarRecoveryPolicy(appState: AppState): void {
   const marker = windowHelper as unknown as { __liteTaskbarRecoveryInstalled?: boolean };
   if (marker.__liteTaskbarRecoveryInstalled) return;
   marker.__liteTaskbarRecoveryInstalled = true;
-
-  windowHelper.syncLauncherTaskbarForStealth = () => {
-    keepLiteLauncherRecoverable(appState);
-  };
+  windowHelper.syncLauncherTaskbarForStealth = () => keepLiteLauncherRecoverable(appState);
 }
 
 function openLiteSettings(appState: AppState, tab: string): void {
   const launcher = appState.getWindowHelper().getLauncherWindow();
   if (!launcher || launcher.isDestroyed()) return;
-
   launcher.webContents.send('settings:open-tab', tab);
   if (appState.getUndetectable()) {
     launcher.showInactive();
@@ -90,10 +80,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   installLiteTaskbarRecoveryPolicy(appState);
   installLiteAssistantRuntime(appState);
 
-  // -------------------------------------------------------------------------
-  // Lite recovery/safety overrides
-  // -------------------------------------------------------------------------
-
+  // ── Lite recovery/safety overrides ───────────────────────────────────────
   ipcMain.removeHandler('set-undetectable');
   ipcMain.handle('set-undetectable', async (_event, state: boolean) => {
     appState.setUndetectable(Boolean(state));
@@ -118,12 +105,8 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true, surface: 'lite-settings', tab: 'audio' };
   });
 
-  // NativelyInterface's historic collapse path invokes `hide-window` after its
-  // CSS fade. That also hides the separate TopPill BrowserWindow, so there is no
-  // mouse-reachable Show control to reverse the action. In Lite, an overlay-
-  // initiated hide means "collapse the shell": leave the OS windows alive and
-  // make the transparent shell click-through. Full app hiding still goes through
-  // main-process global/tray window actions, not this renderer collapse call.
+  // Renderer Hide means collapse only. Do not hide the BrowserWindows which
+  // contain the very Show button needed to reverse it.
   ipcMain.removeHandler('hide-window');
   ipcMain.handle('hide-window', async (event) => {
     const wh = appState.getWindowHelper();
@@ -140,28 +123,30 @@ export function initializeIpcHandlers(appState: AppState): void {
     appState.setOverlayMousePassthrough(false);
     return { success: true, enabled: false, disabledInLite: true };
   };
-
   ipcMain.removeHandler('set-overlay-mouse-passthrough');
   ipcMain.handle('set-overlay-mouse-passthrough', async () => forcePassthroughOff());
-
   ipcMain.removeHandler('toggle-overlay-mouse-passthrough');
   ipcMain.handle('toggle-overlay-mouse-passthrough', async () => forcePassthroughOff());
-
   ipcMain.removeHandler('get-overlay-mouse-passthrough');
   ipcMain.handle('get-overlay-mouse-passthrough', async () => false);
 
-  // -------------------------------------------------------------------------
-  // Assistant probe — exact same direct Chat Completions transport used at run
-  // time in Lite (including the selected model and optional vision payload).
-  // -------------------------------------------------------------------------
+  // ── Assistant test ───────────────────────────────────────────────────────
+  // The renderer already has a safe `testLlmConnection` preload method. In Lite,
+  // the visible provider surface is one OpenAI-compatible Assistant, so reuse
+  // that existing bridge and route the OpenAI test option to the exact Lite
+  // endpoint/model transport instead of adding a flavor-only preload API.
+  ipcMain.removeHandler('test-llm-connection');
+  ipcMain.handle('test-llm-connection', async (_event, provider: string) => {
+    if (provider === 'openai') return testLiteAssistantConnection();
+    return { success: false, error: 'Lite CN 仅启用自定义 OpenAI-compatible Assistant。' };
+  });
 
+  // Kept as a main-side diagnostic channel for future tooling; settings uses
+  // the existing test-llm-connection preload bridge above.
   ipcMain.removeHandler('lite:test-assistant-connection');
   ipcMain.handle('lite:test-assistant-connection', async () => testLiteAssistantConnection());
 
-  // -------------------------------------------------------------------------
-  // OpenAI-compatible REST STT probe
-  // -------------------------------------------------------------------------
-
+  // ── OpenAI-compatible REST STT probe ─────────────────────────────────────
   ipcMain.removeHandler('test-stt-connection');
   ipcMain.handle(
     'test-stt-connection',
@@ -171,19 +156,13 @@ export function initializeIpcHandlers(appState: AppState): void {
       apiKey: string,
     ) => {
       if (provider !== 'openai') {
-        return {
-          success: false,
-          error: 'Lite CN 仅启用 OpenAI-compatible REST STT。',
-        };
+        return { success: false, error: 'Lite CN 仅启用 OpenAI-compatible REST STT。' };
       }
-
       const resolvedKey = resolveSttTestKey('openai', apiKey);
       if (!resolvedKey.ok) return { success: false, error: resolvedKey.error };
-
       const cm = CredentialsManager.getInstance();
       const endpointOrBaseUrl = cm.getOpenAiSttBaseUrl();
       const model = cm.getGroqSttModel().trim() || 'whisper-1';
-
       try {
         const endpoint = resolveOpenAICompatibleTranscriptionEndpoint(endpointOrBaseUrl);
         await transcribeOpenAICompatibleWav({
@@ -194,11 +173,7 @@ export function initializeIpcHandlers(appState: AppState): void {
           language: 'zh',
           timeoutMs: 15_000,
         });
-        return {
-          success: true,
-          endpoint,
-          model,
-        };
+        return { success: true, endpoint, model };
       } catch (error: any) {
         return {
           success: false,
