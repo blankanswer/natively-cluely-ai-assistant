@@ -1,32 +1,21 @@
 import { EventEmitter } from 'events';
-import axios from 'axios';
-import FormData from 'form-data';
 import { RECOGNITION_LANGUAGES } from '../config/languages';
 import { CredentialsManager } from '../services/CredentialsManager';
 import { getLiteSttModel } from '../lite/settings';
+import {
+  describeOpenAICompatibleSttError,
+  resolveOpenAICompatibleTranscriptionEndpoint,
+  transcribeOpenAICompatibleWav,
+} from '../lite/openAICompatibleStt';
 
 const TARGET_RATE = 16_000;
 const MIN_BUFFER_BYTES = 4_000;
 const SAFETY_NET_MS = 10_000;
 const SILENCE_RMS_THRESHOLD = 50;
-const DEFAULT_BASE = 'https://api.openai.com';
-
-function resolveEndpoint(value?: string): string {
-  const raw = (value || DEFAULT_BASE).trim().replace(/\/+$/, '');
-  if (/\/audio\/transcriptions$/i.test(raw)) return raw;
-  if (/\/v\d+$/i.test(raw)) return `${raw}/audio/transcriptions`;
-  return `${raw}/v1/audio/transcriptions`;
-}
 
 function configuredModel(): string {
-  // Lite reuses the already-exposed setGroqSttModel IPC as a backwards-
-  // compatible non-secret model preference. CredentialsManager does not expose
-  // a public getter for that legacy field, so this narrow read is intentionally
-  // isolated here instead of spreading private-state access across the app.
-  const cm = CredentialsManager.getInstance() as unknown as {
-    credentials?: { groqSttModel?: string };
-  };
-  const legacy = cm.credentials?.groqSttModel?.trim();
+  const cm = CredentialsManager.getInstance();
+  const legacy = cm.getGroqSttModel?.()?.trim();
   return legacy || getLiteSttModel();
 }
 
@@ -37,10 +26,12 @@ function configuredModel(): string {
  * but never opens OpenAI's Realtime WebSocket. Audio is buffered behind the
  * native VAD, normalized to 16 kHz mono WAV, and sent to an OpenAI-compatible
  * multipart `/audio/transcriptions` endpoint using the user's own Bearer key.
+ * The exact endpoint resolver/request helper is shared with the Settings probe,
+ * so a successful probe guarantees the live path uses the same URL and model.
  */
 export class OpenAIStreamingSTT extends EventEmitter {
   private apiKey: string;
-  private endpoint: string;
+  private endpointOrBaseUrl: string | undefined;
   private inputSampleRate = TARGET_RATE;
   private numChannels = 1;
   private languageKey = 'chinese';
@@ -49,13 +40,18 @@ export class OpenAIStreamingSTT extends EventEmitter {
   private isActive = false;
   private isUploading = false;
   private flushPending = false;
+  private allowPendingAfterStop = false;
   private timer: NodeJS.Timeout | null = null;
 
   constructor(apiKey: string, baseUrl?: string) {
     super();
     this.apiKey = apiKey;
-    this.endpoint = resolveEndpoint(baseUrl);
-    console.log(`[LiteSTT] REST endpoint: ${this.endpoint}`);
+    this.endpointOrBaseUrl = baseUrl;
+    try {
+      console.log(`[LiteSTT] REST endpoint: ${resolveOpenAICompatibleTranscriptionEndpoint(baseUrl)}`);
+    } catch (error: any) {
+      console.warn(`[LiteSTT] Invalid endpoint configuration: ${error?.message || error}`);
+    }
   }
 
   public setApiKey(apiKey: string): void {
@@ -81,11 +77,17 @@ export class OpenAIStreamingSTT extends EventEmitter {
     this.isActive = true;
     this.chunks = [];
     this.bufferedBytes = 0;
+    this.flushPending = false;
+    this.allowPendingAfterStop = false;
     this.timer = setInterval(() => void this.flushAndUpload(), SAFETY_NET_MS);
   }
 
   public stop(): void {
     if (!this.isActive) return;
+    // Latch the final-flush intent before turning the stream inactive. If an
+    // upload is already in flight, its finally block must still be allowed to
+    // drain the pending tail instead of losing the last spoken words.
+    this.allowPendingAfterStop = true;
     void this.flushAndUpload(true);
     this.isActive = false;
     if (this.timer) clearInterval(this.timer);
@@ -107,10 +109,11 @@ export class OpenAIStreamingSTT extends EventEmitter {
   }
 
   private async flushAndUpload(allowAfterStop = false): Promise<void> {
-    if (!this.isActive && !allowAfterStop) return;
+    if (!this.isActive && !allowAfterStop && !this.allowPendingAfterStop) return;
     if (this.bufferedBytes < MIN_BUFFER_BYTES || this.chunks.length === 0) return;
     if (this.isUploading) {
       this.flushPending = true;
+      this.allowPendingAfterStop = this.allowPendingAfterStop || allowAfterStop;
       return;
     }
 
@@ -121,44 +124,41 @@ export class OpenAIStreamingSTT extends EventEmitter {
 
     const pcm16k = this.to16kMono(raw);
     const wav = this.addWavHeader(pcm16k, TARGET_RATE, 1);
+    const model = configuredModel();
     this.isUploading = true;
 
     try {
-      const form = new FormData();
-      form.append('file', wav, { filename: 'audio.wav', contentType: 'audio/wav' });
-      form.append('model', configuredModel());
-
       const language = this.languageKey && this.languageKey !== 'auto'
         ? RECOGNITION_LANGUAGES[this.languageKey]?.iso639
         : undefined;
-      if (language && language !== 'auto') form.append('language', language);
 
-      const response = await axios.post(this.endpoint, form, {
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          ...form.getHeaders(),
-        },
-        timeout: 30_000,
-        maxBodyLength: 30 * 1024 * 1024,
+      const response = await transcribeOpenAICompatibleWav({
+        apiKey: this.apiKey,
+        endpointOrBaseUrl: this.endpointOrBaseUrl,
+        model,
+        wav,
+        language: language && language !== 'auto' ? language : undefined,
+        timeoutMs: 30_000,
       });
 
-      const text = typeof response.data === 'string'
-        ? response.data
-        : response.data?.text;
-      if (typeof text === 'string' && text.trim()) {
+      if (response.text) {
         this.emit('transcript', {
-          text: text.trim(),
+          text: response.text,
           isFinal: true,
           confidence: 1,
         });
       }
-    } catch (error) {
-      this.emit('error', error instanceof Error ? error : new Error(String(error)));
+    } catch (error: any) {
+      const message = describeOpenAICompatibleSttError(error, this.endpointOrBaseUrl, model);
+      this.emit('error', new Error(message));
     } finally {
       this.isUploading = false;
       if (this.flushPending) {
         this.flushPending = false;
-        void this.flushAndUpload(allowAfterStop);
+        const shouldAllowAfterStop = this.allowPendingAfterStop;
+        void this.flushAndUpload(shouldAllowAfterStop);
+      } else if (!this.isActive) {
+        this.allowPendingAfterStop = false;
       }
     }
   }
@@ -187,7 +187,13 @@ export class OpenAIStreamingSTT extends EventEmitter {
     const factor = this.inputSampleRate / TARGET_RATE;
     const outLength = Math.max(0, Math.floor(mono.length / factor));
     const out = new Int16Array(outLength);
-    for (let i = 0; i < outLength; i++) out[i] = mono[Math.min(mono.length - 1, Math.floor(i * factor))] || 0;
+    for (let i = 0; i < outLength; i++) {
+      const sourcePos = i * factor;
+      const left = Math.min(mono.length - 1, Math.floor(sourcePos));
+      const right = Math.min(mono.length - 1, left + 1);
+      const fraction = sourcePos - left;
+      out[i] = Math.round((mono[left] || 0) * (1 - fraction) + (mono[right] || 0) * fraction);
+    }
     return Buffer.from(out.buffer);
   }
 
