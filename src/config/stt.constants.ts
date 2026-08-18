@@ -25,7 +25,7 @@ export interface SttProviderConfig {
 export const STT_PROVIDERS: Record<SttProviderId, SttProviderConfig> = {
     google: {
         id: 'google',
-        name: 'Google Cloud (Default)',
+        name: 'Google Cloud',
         description: 'Uses gRPC streaming via Google Cloud Service Account',
         endpoint: '', // Google uses gRPC, not REST
         model: '',
@@ -50,13 +50,12 @@ export const STT_PROVIDERS: Record<SttProviderId, SttProviderConfig> = {
         extraFormFields: {
             temperature: '0',
             response_format: 'json',
-            language: 'en',
         },
     },
     openai: {
         id: 'openai',
-        name: 'OpenAI Whisper',
-        description: 'Transcription via OpenAI Whisper API',
+        name: 'Custom / OpenAI-Compatible STT',
+        description: 'Use your own API key and OpenAI-compatible transcription endpoint',
         endpoint: 'https://api.openai.com/v1/audio/transcriptions',
         model: 'whisper-1',
         uploadType: 'multipart',
@@ -115,9 +114,9 @@ export const STT_PROVIDERS: Record<SttProviderId, SttProviderConfig> = {
     },
     natively: {
         id: 'natively',
-        name: 'Natively Pro (Managed)',
-        description: 'All-in-one managed STT via Natively API',
-        endpoint: '', 
+        name: 'Natively Managed STT',
+        description: 'Upstream managed STT service (hidden from Lite provider picker)',
+        endpoint: '',
         model: '',
         uploadType: 'websocket',
         authHeader: () => ({}),
@@ -125,7 +124,10 @@ export const STT_PROVIDERS: Record<SttProviderId, SttProviderConfig> = {
     },
 };
 
-export const STT_PROVIDER_OPTIONS = Object.values(STT_PROVIDERS);
+// Lite build keeps compatibility with persisted upstream provider ids, but does
+// not advertise the upstream managed/commercial STT option to new users.
+export const STT_PROVIDER_OPTIONS = Object.values(STT_PROVIDERS).filter(
+    (provider) => provider.id !== 'natively',
+);
 
-export const DEFAULT_STT_PROVIDER: SttProviderId = 'google';
-
+export const DEFAULT_STT_PROVIDER: SttProviderId = 'openai';
