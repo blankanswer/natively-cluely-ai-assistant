@@ -1,0 +1,100 @@
+name: Lite CN Build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'electron/**'
+      - 'scripts/build-electron-lite.js'
+      - 'vite.config.lite.mts'
+      - 'electron-builder.lite.cjs'
+      - '.github/workflows/lite-cn-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+          - os: macos-14
+            label: macOS
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout Lite branch
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          lfs: false
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies without upstream postinstall
+        shell: bash
+        run: npm ci --ignore-scripts
+
+      - name: Apply dependency patches
+        shell: bash
+        run: npx patch-package
+
+      - name: Prepare native dependencies
+        shell: bash
+        run: |
+          npm rebuild sharp
+          node scripts/build-native.js
+          node scripts/rebuild-native-electron.js
+          node scripts/verify-native-arch.js
+
+      - name: Build Lite renderer
+        shell: bash
+        run: |
+          node node_modules/typescript7/lib/tsc.js -p tsconfig.json --noEmit
+          npx vite build --config vite.config.lite.mts
+
+      - name: Build Lite Electron main process
+        shell: bash
+        run: node scripts/build-electron-lite.js
+
+      - name: Package Lite CN
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          NATIVELY_LITE_CN: '1'
+        run: node scripts/package-app.js --config electron-builder.lite.cjs --publish never
+
+      - name: Show package sizes
+        if: always()
+        shell: bash
+        run: |
+          if [ -d release ]; then
+            find release -maxdepth 2 -type f -print || true
+            du -sh release || true
+          fi
+
+      - name: Upload packages
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: natively-lite-cn-${{ matrix.label }}
+          path: |
+            release/*.exe
+            release/*.zip
+            release/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
