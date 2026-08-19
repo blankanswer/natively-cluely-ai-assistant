@@ -18,6 +18,11 @@ const currentArch = process.arch === 'arm64' ? 'arm64' : 'x64';
 
 module.exports = {
   ...base,
+  // Do NOT reuse upstream's com.electron.meeting-notes identity. macOS TCC,
+  // LaunchServices and other per-app state key off the bundle identifier/signing
+  // requirement. A dedicated Lite id prevents an upstream install or an older
+  // ad-hoc test build from poisoning Screen Recording / Microphone state.
+  appId: 'com.blankanswer.natively-lite-cn',
   productName: 'Natively Lite CN',
   artifactName: '${productName}-${version}-${os}-${arch}.${ext}',
   generateUpdatesFilesForAllChannels: false,
