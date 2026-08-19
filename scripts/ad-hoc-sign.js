@@ -52,13 +52,6 @@ function verifyPackedNativeArch(appPath, targetArchName) {
         }
         const actual = binaryArchOf(abs);
         if (String(actual).startsWith('unknown')) {
-            // FAIL OPEN on unclassifiable `file -b` output, matching the deliberate
-            // policy in electron/lib/nativeArch.mjs:156-161. `file`'s phrasing varies
-            // across macOS releases/locales; unknown output is NOT proof of a
-            // wrong-arch binary. A build-time false-negative is still caught by the
-            // runtime boot gate (main.ts nativeArchGate), whereas failing closed here
-            // would block every release on a benign `file` wording change — the exact
-            // fragility class behind the v2.8.1→v2.8.2 boot-dialog regression.
             console.warn(`[Arch Guard] could not classify ${rel} (${actual}); skipping arch check for this file`);
             continue;
         }
@@ -81,23 +74,11 @@ function verifyPackedNativeArch(appPath, targetArchName) {
 }
 
 // ─── Helper Disguise Configuration ───
-// Display name used for helper processes in Activity Monitor
 const DISGUISE_BASE = 'CoreServices';
-
 const HELPER_SUFFIXES = ['', ' (GPU)', ' (Renderer)', ' (Plugin)'];
 
-/**
- * Update the display names inside each helper's Info.plist so Activity Monitor
- * shows "CoreServices Helper" instead of "Natively Helper".
- *
- * IMPORTANT: We only modify CFBundleDisplayName and CFBundleName.
- * We do NOT rename the .app folders or the executable binaries — doing so
- * would break Electron's internal process spawning (Chromium hardcodes the
- * helper paths based on productName).
- */
 function disguiseHelperPlists(appOutDir, appName) {
     const frameworksDir = path.join(appOutDir, `${appName}.app`, 'Contents', 'Frameworks');
-
     if (!fs.existsSync(frameworksDir)) {
         console.log('[Helper Disguise] Frameworks directory not found, skipping.');
         return;
@@ -108,62 +89,41 @@ function disguiseHelperPlists(appOutDir, appName) {
         const disguisedName = `${DISGUISE_BASE} Helper${suffix}`;
         const helperAppPath = path.join(frameworksDir, `${helperName}.app`);
         const plistPath = path.join(helperAppPath, 'Contents', 'Info.plist');
-
         if (!fs.existsSync(plistPath)) {
             console.log(`[Helper Disguise] Skipping (not found): ${helperName}.app`);
             continue;
         }
-
         console.log(`[Helper Disguise] ${helperName} → display as "${disguisedName}"`);
-
         try {
-            // Update CFBundleDisplayName (Activity Monitor display)
             execSync(`/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName '${disguisedName}'" "${plistPath}"`, { stdio: 'pipe' });
-            // Update CFBundleName (Dock / menu bar fallback)
             execSync(`/usr/libexec/PlistBuddy -c "Set :CFBundleName '${disguisedName}'" "${plistPath}"`, { stdio: 'pipe' });
         } catch (err) {
             console.warn(`[Helper Disguise] PlistBuddy warning for ${helperName}:`, err.message);
         }
     }
-
     console.log('[Helper Disguise] All helper plists updated successfully.');
 }
 
 exports.default = async function (context) {
-    // Only process on macOS
-    if (process.platform !== 'darwin') {
-        return;
-    }
+    if (process.platform !== 'darwin') return;
 
     const appOutDir = context.appOutDir;
     const appName = context.packager.appInfo.productFilename;
     const appPath = path.join(appOutDir, `${appName}.app`);
 
-    // ── Step 0: Verify packed native binaries match the target arch ──
-    // MUST run before signing and before any early return (signed path returns
-    // early once it detects a Developer ID identity). A wrong-arch binary here
-    // means the package for this arch would crash on launch — fail loudly now.
     const targetArchName = ebArchToName(context.arch);
     verifyPackedNativeArch(appPath, targetArchName);
 
-    // ── Step 1: Disguise helper display names (before signing) ──
-    // This MUST run regardless of the signing path: it edits helper Info.plist
-    // display names, and afterPack runs BEFORE electron-builder's own signing,
-    // so a later Developer ID signature will cover these edits correctly.
     try {
         disguiseHelperPlists(appOutDir, appName);
     } catch (error) {
         console.error('[Helper Disguise] Failed to update helper plists:', error);
-        // Non-fatal: continue to signing
     }
 
-    // ── Production guard: never ad-hoc sign when a real Developer ID identity is configured ──
-    // When CSC_LINK / CSC_NAME / NATIVELY_SIGN_IDENTITY is present, electron-builder performs
-    // proper inside-out Developer ID signing with the entitlements + hardened runtime declared
-    // in the production config. Running `codesign --sign -` here would clobber that real
-    // signature with an ad-hoc one, which can never be notarized.
+    // A real Developer ID build is signed later by electron-builder using the
+    // production entitlements + provisioning/notarization path. Never overwrite it.
     const hasRealIdentity = !!(
-        process.env.NATIVELY_PRODUCTION_SIGN === '1' || // set by electron-builder.signed.cjs
+        process.env.NATIVELY_PRODUCTION_SIGN === '1' ||
         process.env.CSC_LINK ||
         process.env.CSC_NAME ||
         process.env.NATIVELY_SIGN_IDENTITY
@@ -176,36 +136,46 @@ exports.default = async function (context) {
         return;
     }
 
-    // Optional: shape the ad-hoc build like a hardened-runtime build for local TCC testing.
-    // Off by default because a hardened-runtime ad-hoc build has stricter launch requirements
-    // that cannot be fully verified without a real signing identity. Set NATIVELY_ADHOC_HARDENED=1
-    // to opt in when testing entitlement/permission behavior locally.
     const hardenedOpt = process.env.NATIVELY_ADHOC_HARDENED === '1' ? '--options runtime ' : '';
 
-    // ── Step 2: Ad-hoc sign the COMPLETE application (DEV / CI distribution only) ──
-    // IMPORTANT: this bundle-level signature must be the LAST mutation of any file under
-    // `${appName}.app`. The outer CodeResources seal records nested code/resources. Re-signing
-    // a .node/.dylib AFTER the app has been sealed changes that nested file and produces:
-    //   "a sealed resource is missing or invalid" / "file modified: ...index.darwin-arm64.node"
-    // which Gatekeeper surfaces as "app is damaged".
+    // IMPORTANT: ad-hoc CI builds MUST NOT use build/entitlements.mac.plist.
+    // That production file contains `keychain-access-groups`, a restricted macOS
+    // entitlement that needs authorization from a provisioning profile. An ad-hoc
+    // signature has no Developer ID team/profile, so the signature can verify on disk
+    // while taskgated rejects the process at launch (RBSRequestErrorDomain Code=5 /
+    // NSPOSIXErrorDomain Code=153 / launchd job spawn failed).
     //
-    // `--deep` recursively signs nested Mach-O code first and seals the outer bundle last.
-    // Privacy access (microphone / screen capture / system audio) is authorized against the
-    // host app process and its Info.plist/TCC state; native .node addons do NOT need a second
-    // post-bundle entitlement signature.
-    const entitlementsPath = path.join(context.packager.info.projectDir, 'build', 'entitlements.mac.plist');
+    // The ad-hoc profile contains only unrestricted/runtime entitlements. Production
+    // Developer ID builds continue to use entitlements.mac.plist through
+    // electron-builder.signed.cjs.
+    const entitlementsPath = path.join(
+        context.packager.info.projectDir,
+        'build',
+        'entitlements.mac.adhoc.plist'
+    );
 
-    console.log(`[Ad-Hoc Signing] Signing complete app ${appPath} with entitlements...`);
+    console.log(`[Ad-Hoc Signing] Signing complete app ${appPath} with ${path.basename(entitlementsPath)}...`);
 
     try {
         execSync(
             `codesign --force --deep ${hardenedOpt}--entitlements "${entitlementsPath}" --sign - "${appPath}"`,
             { stdio: 'inherit' }
         );
-        // Verify immediately so a future afterPack change cannot silently ship another
-        // internally-invalid app bundle. This is the exact check users can reproduce locally.
         execSync(`codesign --verify --deep --strict --verbose=4 "${appPath}"`, { stdio: 'inherit' });
-        console.log('[Ad-Hoc Signing] Successfully signed and verified the complete application.');
+
+        // Guard specifically against the restricted entitlement that caused a valid-looking
+        // ad-hoc app to be rejected by taskgated at spawn time.
+        const claimed = execSync(`codesign -d --entitlements :- "${appPath}" 2>/dev/null || true`, {
+            encoding: 'utf8',
+        });
+        if (claimed.includes('keychain-access-groups')) {
+            throw new Error(
+                '[Ad-Hoc Signing] FATAL: ad-hoc app unexpectedly claims keychain-access-groups; ' +
+                'this requires a provisioning profile and can make launchd/taskgated reject the app.'
+            );
+        }
+
+        console.log('[Ad-Hoc Signing] Successfully signed and verified launch-safe ad-hoc application.');
     } catch (error) {
         console.error('[Ad-Hoc Signing] Failed to sign/verify the application:', error);
         throw error;
