@@ -15,14 +15,17 @@ const isModelsResource = (entry) => {
 };
 
 const currentArch = process.arch === 'arm64' ? 'arm64' : 'x64';
+const isMacBuildHost = process.platform === 'darwin';
 
 module.exports = {
   ...base,
-  // Do NOT reuse upstream's com.electron.meeting-notes identity. macOS TCC,
-  // LaunchServices and other per-app state key off the bundle identifier/signing
-  // requirement. A dedicated Lite id prevents an upstream install or an older
-  // ad-hoc test build from poisoning Screen Recording / Microphone state.
-  appId: 'com.blankanswer.natively-lite-cn',
+  // Do NOT reuse upstream's com.electron.meeting-notes identity on macOS.
+  // macOS TCC / LaunchServices key state off bundle identity + signing
+  // requirement, so a dedicated Lite id prevents an upstream install or an
+  // older ad-hoc test build from poisoning Screen Recording/Microphone state.
+  // Keep Windows/Linux on the existing id so their currently-working install
+  // identity and NSIS behavior do not change as part of a macOS-only fix.
+  appId: isMacBuildHost ? 'com.blankanswer.natively-lite-cn' : base.appId,
   productName: 'Natively Lite CN',
   artifactName: '${productName}-${version}-${os}-${arch}.${ext}',
   generateUpdatesFilesForAllChannels: false,
