@@ -40,52 +40,77 @@ function makeProbeWav(): Buffer {
 }
 
 /**
- * Lite Windows recovery contract:
- *   visible       -> launcher has a taskbar entry + tray is present
- *   undetectable  -> launcher is removed from taskbar + tray stays present
+ * Lite recovery contract.
  *
- * The upstream commercial stealth policy hides BOTH the tray and taskbar while
- * undetectable. That is deliberately too aggressive for Lite: it creates a
- * lock-out after minimize/hide. The tray is the permanent recovery surface.
+ * Windows:
+ *   visible       -> taskbar entry + tray
+ *   undetectable  -> no taskbar entry + tray remains as recovery surface
+ *
+ * macOS:
+ *   visible       -> Dock + menu-bar status item
+ *   undetectable  -> Dock hidden + menu-bar status item remains
+ *
+ * Upstream's commercial stealth policy may hide every recovery surface. That is
+ * deliberately too aggressive for Lite: a minimized/hidden app can become
+ * impossible to bring back. The tray/menu-bar item is therefore authoritative.
  */
-function syncLiteWindowsRecoverySurfaces(appState: AppState): void {
-  if (process.platform !== 'win32') return;
+function syncLiteRecoverySurfaces(appState: AppState): void {
+  if (process.platform !== 'win32' && process.platform !== 'darwin') return;
 
-  // Upstream setUndetectable(true) destroys the tray before asking
-  // WindowHelper to sync the taskbar. Re-create it here. showTray() is
-  // idempotent, so this is safe on every cold-start/toggle/show path.
+  // Upstream setUndetectable(true) may destroy the tray/status item. Re-create
+  // it after every stealth transition and once at Lite IPC initialization.
   appState.showTray();
 
-  const launcher = appState.getWindowHelper().getLauncherWindow();
-  if (!launcher || launcher.isDestroyed()) return;
+  if (process.platform === 'win32') {
+    const launcher = appState.getWindowHelper().getLauncherWindow();
+    if (!launcher || launcher.isDestroyed()) return;
+    try {
+      launcher.setSkipTaskbar(appState.getUndetectable());
+    } catch (error) {
+      console.warn('[LiteCN] Failed to synchronize Windows taskbar state:', error);
+    }
+    return;
+  }
+
+  // macOS has two separate surfaces: Dock (bottom) and menu-bar status item
+  // (top). Keep the menu-bar item, but hide the Dock while undetectable.
   try {
-    launcher.setSkipTaskbar(appState.getUndetectable());
+    const dock = (app as any).dock;
+    if (dock) {
+      if (appState.getUndetectable()) {
+        dock.hide();
+      } else {
+        const result = dock.show();
+        if (result && typeof result.catch === 'function') {
+          void result.catch((error: unknown) => {
+            console.warn('[LiteCN] Failed to show macOS Dock icon:', error);
+          });
+        }
+      }
+    }
   } catch (error) {
-    console.warn('[LiteCN] Failed to synchronize launcher taskbar state:', error);
+    console.warn('[LiteCN] Failed to synchronize macOS Dock state:', error);
   }
 }
 
-function installLiteWindowsRecoveryPolicy(appState: AppState): void {
-  if (process.platform !== 'win32') return;
+function installLiteRecoveryPolicy(appState: AppState): void {
+  if (process.platform !== 'win32' && process.platform !== 'darwin') return;
   const windowHelper = appState.getWindowHelper();
-  const marker = windowHelper as unknown as { __liteTrayRecoveryInstalled?: boolean };
-  if (marker.__liteTrayRecoveryInstalled) return;
-  marker.__liteTrayRecoveryInstalled = true;
+  const marker = windowHelper as unknown as { __liteRecoveryInstalled?: boolean };
+  if (marker.__liteRecoveryInstalled) return;
+  marker.__liteRecoveryInstalled = true;
 
-  // This method is called during launcher creation as well as every
-  // setUndetectable transition. Replacing the instance method before the
-  // BrowserWindow is created makes the tray/taskbar state correct even when a
-  // session cold-starts with undetectable=true persisted from last time.
+  // Called during launcher creation and every setUndetectable transition in the
+  // upstream WindowHelper. Replacing the instance method also makes persisted
+  // stealth state recoverable on a cold start.
   windowHelper.syncLauncherTaskbarForStealth = () => {
-    syncLiteWindowsRecoverySurfaces(appState);
+    syncLiteRecoverySurfaces(appState);
   };
 }
 
 function showLiteLauncher(appState: AppState): void {
   const wh = appState.getWindowHelper();
-  // Apply skipTaskbar before showing so Windows never flashes a taskbar button
-  // in undetectable mode while restoring from the tray.
-  syncLiteWindowsRecoverySurfaces(appState);
+  syncLiteRecoverySurfaces(appState);
   wh.setWindowMode('launcher', appState.getUndetectable());
 
   const launcher = wh.getLauncherWindow();
@@ -106,13 +131,17 @@ function showLiteMeeting(appState: AppState): void {
   }
 
   const wh = appState.getWindowHelper();
-  syncLiteWindowsRecoverySurfaces(appState);
+  syncLiteRecoverySurfaces(appState);
+
+  // Hide/Show can leave Electron's native window in ignoreMouseEvents=true.
+  // Restore interaction BEFORE showing so the first frame is already clickable.
+  wh.setOverlayHoverInteractive(true);
   wh.setWindowMode('overlay', true);
   const overlay = wh.getOverlayWindow();
   if (overlay && !overlay.isDestroyed()) {
-    // Tray recovery always restores a usable panel, not a fully collapsed shell.
     overlay.webContents.send('ensure-expanded');
     overlay.showInactive();
+    wh.setOverlayHoverInteractive(true);
   }
   if (appState.getUndetectable()) appState.reassertUndetectableStealth();
 }
@@ -121,7 +150,7 @@ function openLiteSettings(appState: AppState, tab: string): void {
   const launcher = appState.getWindowHelper().getLauncherWindow();
   if (!launcher || launcher.isDestroyed()) return;
 
-  syncLiteWindowsRecoverySurfaces(appState);
+  syncLiteRecoverySurfaces(appState);
   launcher.webContents.send('settings:open-tab', tab);
   if (appState.getUndetectable()) {
     launcher.showInactive();
@@ -133,12 +162,12 @@ function openLiteSettings(appState: AppState, tab: string): void {
 }
 
 /**
- * Replace the broad upstream tray menu with the Lite recovery menu. The tray
- * itself remains created by AppState.showTray(), so icon selection and native
- * lifecycle stay upstream-compatible; only the menu/actions are flavor-specific.
+ * Replace the broad upstream tray/status menu with a small permanent Lite
+ * recovery menu. Electron Tray maps to the Windows system tray and the macOS
+ * menu-bar status area, so the same actions work on both platforms.
  */
 function installLiteTrayMenu(appState: AppState): void {
-  if (process.platform !== 'win32') return;
+  if (process.platform !== 'win32' && process.platform !== 'darwin') return;
   const state = appState as any;
   if (state.__liteTrayMenuInstalled) return;
   state.__liteTrayMenuInstalled = true;
@@ -170,7 +199,7 @@ function installLiteTrayMenu(appState: AppState): void {
           try {
             await appState.endMeeting();
           } finally {
-            syncLiteWindowsRecoverySurfaces(appState);
+            syncLiteRecoverySurfaces(appState);
           }
         },
       },
@@ -181,23 +210,33 @@ function installLiteTrayMenu(appState: AppState): void {
       },
     ]));
   };
+
+  // Ensure an already-created tray gets the Lite menu immediately.
+  appState.showTray();
+  state.updateTrayMenu();
 }
 
 export function initializeIpcHandlers(appState: AppState): void {
   initializeUpstreamIpcHandlers(appState);
   installLiteTrayMenu(appState);
-  installLiteWindowsRecoveryPolicy(appState);
+  installLiteRecoveryPolicy(appState);
   installLiteAssistantRuntime(appState);
+  syncLiteRecoverySurfaces(appState);
 
   // ── Lite recovery/safety overrides ───────────────────────────────────────
   ipcMain.removeHandler('set-undetectable');
   ipcMain.handle('set-undetectable', async (_event, state: boolean) => {
     appState.setUndetectable(Boolean(state));
-    syncLiteWindowsRecoverySurfaces(appState);
+    syncLiteRecoverySurfaces(appState);
     return {
       success: true,
       state: appState.getUndetectable(),
-      recoverySurface: process.platform === 'win32' ? 'tray' : 'native',
+      recoverySurface:
+        process.platform === 'darwin'
+          ? 'menu-bar'
+          : process.platform === 'win32'
+            ? 'tray'
+            : 'native',
     };
   });
 
@@ -218,21 +257,34 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true, surface: 'lite-settings', tab: 'audio' };
   });
 
-  // Hide/Show is a renderer expansion state, NOT capture visibility. The old
-  // collapse path called hide-window after its fade, which hid the overlay,
-  // pill and therefore the Show button itself. In Lite, an overlay-originated
-  // hide leaves all BrowserWindows alive and only makes the transparent shell
-  // click-through; the independent pill remains the recovery control.
+  // Overlay expansion is a visibility operation AND an interaction reset. A
+  // previous collapse may have left the native BrowserWindow click-through;
+  // restoring this before show prevents the "looks visible but clicks through"
+  // state until the user navigates away and back.
+  ipcMain.removeHandler('show-window');
+  ipcMain.handle('show-window', async (_event, inactive?: boolean) => {
+    const wh = appState.getWindowHelper();
+    wh.setOverlayHoverInteractive(true);
+    appState.showMainWindow(inactive);
+    wh.setOverlayHoverInteractive(true);
+    syncLiteRecoverySurfaces(appState);
+    return { success: true };
+  });
+
+  // Hide/Show is a renderer expansion state, NOT capture visibility. In Lite an
+  // overlay-originated hide leaves the BrowserWindows alive. Crucially, do NOT
+  // force ignoreMouseEvents=true here: once ignored, the window cannot receive
+  // the mousemove that would make the hover gate interactive again on Show.
   ipcMain.removeHandler('hide-window');
   ipcMain.handle('hide-window', async (event) => {
     const wh = appState.getWindowHelper();
     const overlay = wh.getOverlayWindow();
     if (overlay && !overlay.isDestroyed() && overlay.webContents.id === event.sender.id) {
-      wh.setOverlayHoverInteractive(false);
+      wh.setOverlayHoverInteractive(true);
       return { success: true, collapsedOnly: true };
     }
     wh.hideMainWindow();
-    syncLiteWindowsRecoverySurfaces(appState);
+    syncLiteRecoverySurfaces(appState);
     return { success: true, collapsedOnly: false };
   });
 
@@ -241,6 +293,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   // WindowHelper's bounded hover click-through policy.
   const forcePassthroughOff = () => {
     appState.setOverlayMousePassthrough(false);
+    appState.getWindowHelper().setOverlayHoverInteractive(true);
     return { success: true, enabled: false, disabledInLite: true };
   };
   ipcMain.removeHandler('set-overlay-mouse-passthrough');
@@ -251,9 +304,6 @@ export function initializeIpcHandlers(appState: AppState): void {
   ipcMain.handle('get-overlay-mouse-passthrough', async () => false);
 
   // ── Assistant test ───────────────────────────────────────────────────────
-  // Settings reuses the existing safe OpenAI test bridge, but in Lite it probes
-  // the exact configured custom Assistant via the same SSE transport used by a
-  // meeting. Success means real delta.content arrived, not merely HTTP 200.
   ipcMain.removeHandler('test-llm-connection');
   ipcMain.handle('test-llm-connection', async (_event, provider: string) => {
     if (provider === 'openai') return testLiteAssistantConnection();
