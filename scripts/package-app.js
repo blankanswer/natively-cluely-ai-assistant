@@ -27,6 +27,7 @@
  * `process.execPath` rather than the `electron-builder` bin shim, so there is no
  * dependency on `.cmd`/`.ps1` shim resolution or on PATH ordering.
  */
+const fs = require('fs');
 const { spawnSync } = require('child_process');
 const os = require('os');
 const path = require('path');
@@ -52,7 +53,7 @@ function run(scriptPath, args) {
   const result = spawnSync(process.execPath, [scriptPath, ...args], {
     stdio: 'inherit',
     // No `shell: true`: args are passed as an array, so paths containing spaces
-    // (e.g. C:\Users\Some User\...) need no quoting and nothing is re-parsed by
+    // (e.g. C:\\Users\\Some User\\...) need no quoting and nothing is re-parsed by
     // cmd.exe or /bin/sh.
   });
 
@@ -75,35 +76,103 @@ function run(scriptPath, args) {
   return result.status;
 }
 
-const builderArgs = process.argv.slice(2);
-
-// The resolve is inside the guarded region on purpose. The bash original ran
-// the native rebuild even when electron-builder could not be executed at all
-// (sh printed "command not found", set $? to 127, and still ran the next
-// command). If a resolution failure threw out of here instead, the developer's
-// tree would be left with native addons built for the Node ABI and `npm start`
-// would die with ERR_DLOPEN_FAILED — the exact failure the always-run rebuild
-// exists to prevent.
-let builderCode;
-try {
-  builderCode = run(resolveElectronBuilderCli(), builderArgs);
-} catch (error) {
-  console.error(`[package-app] Could not locate electron-builder: ${error.message}`);
-  builderCode = 127; // sh's "command not found"
+function usesLiteBuilderConfig(args) {
+  return args.some((arg, index) => {
+    if (arg === '--config') {
+      return path.basename(args[index + 1] || '') === 'electron-builder.lite.cjs';
+    }
+    if (arg.startsWith('--config=')) {
+      return path.basename(arg.slice('--config='.length)) === 'electron-builder.lite.cjs';
+    }
+    return false;
+  });
 }
 
-if (builderCode !== 0) {
-  console.error(`[package-app] electron-builder exited with code ${builderCode}`);
+/**
+ * electron-builder 26.x's legacy app-builder icon path is reliable for PNG,
+ * ICNS and ICO, but it cannot rasterize our Lite SVG consistently on macOS and
+ * Windows. Keep the SVG as the source of truth and generate a 1024x1024 PNG
+ * just before Lite packaging. `tmp/` is already gitignored and is not part of
+ * the packaged application files.
+ */
+async function prepareLiteIcon() {
+  const projectRoot = path.join(__dirname, '..');
+  const source = path.join(projectRoot, 'assets', 'lite-icon.svg');
+  const target = path.join(projectRoot, 'tmp', 'lite-icon.png');
+
+  if (!fs.existsSync(source)) {
+    throw new Error(`Lite icon source is missing: ${source}`);
+  }
+
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+
+  const sourceMtime = fs.statSync(source).mtimeMs;
+  if (fs.existsSync(target) && fs.statSync(target).mtimeMs >= sourceMtime) {
+    console.log('[package-app] Reusing generated tmp/lite-icon.png');
+    return;
+  }
+
+  const sharp = require('sharp');
+  await sharp(source)
+    .resize(1024, 1024, { fit: 'contain' })
+    .png()
+    .toFile(target);
+
+  const metadata = await sharp(target).metadata();
+  if (metadata.width !== 1024 || metadata.height !== 1024 || metadata.format !== 'png') {
+    throw new Error(
+      `Generated Lite icon is invalid: format=${metadata.format}, ${metadata.width}x${metadata.height}`
+    );
+  }
+
+  console.log('[package-app] Generated tmp/lite-icon.png from assets/lite-icon.svg (1024x1024)');
 }
 
-console.log('[package-app] Restoring native addons to the Electron ABI...');
-const rebuildCode = run(path.join(__dirname, 'rebuild-native-electron.js'), []);
+async function main() {
+  const builderArgs = process.argv.slice(2);
 
-if (rebuildCode !== 0) {
-  console.error(
-    `[package-app] rebuild-native-electron.js exited with code ${rebuildCode} — ` +
-      'run "npm run rebuild:native" before starting the app in development.'
-  );
+  if (usesLiteBuilderConfig(builderArgs)) {
+    try {
+      await prepareLiteIcon();
+    } catch (error) {
+      console.error(`[package-app] Could not prepare Lite icon: ${error.message}`);
+      process.exit(1);
+    }
+  }
+
+  // The resolve is inside the guarded region on purpose. The bash original ran
+  // the native rebuild even when electron-builder could not be executed at all
+  // (sh printed "command not found", set $? to 127, and still ran the next
+  // command). If a resolution failure threw out of here instead, the developer's
+  // tree would be left with native addons built for the Node ABI and `npm start`
+  // would die with ERR_DLOPEN_FAILED — the exact failure the always-run rebuild
+  // exists to prevent.
+  let builderCode;
+  try {
+    builderCode = run(resolveElectronBuilderCli(), builderArgs);
+  } catch (error) {
+    console.error(`[package-app] Could not locate electron-builder: ${error.message}`);
+    builderCode = 127; // sh's "command not found"
+  }
+
+  if (builderCode !== 0) {
+    console.error(`[package-app] electron-builder exited with code ${builderCode}`);
+  }
+
+  console.log('[package-app] Restoring native addons to the Electron ABI...');
+  const rebuildCode = run(path.join(__dirname, 'rebuild-native-electron.js'), []);
+
+  if (rebuildCode !== 0) {
+    console.error(
+      `[package-app] rebuild-native-electron.js exited with code ${rebuildCode} — ` +
+        'run "npm run rebuild:native" before starting the app in development.'
+    );
+  }
+
+  process.exit(builderCode);
 }
 
-process.exit(builderCode);
+main().catch((error) => {
+  console.error('[package-app] Unexpected packaging wrapper failure:', error);
+  process.exit(1);
+});
