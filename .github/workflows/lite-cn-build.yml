@@ -8,6 +8,7 @@ on:
       - 'src/**'
       - 'electron/**'
       - 'native-module/**'
+      - 'build/entitlements.mac.adhoc.plist'
       - 'scripts/build-electron-lite.js'
       - 'scripts/ad-hoc-sign.js'
       - 'vite.config.lite.mts'
@@ -95,6 +96,13 @@ jobs:
           echo "Verifying packed app: $APP"
           codesign --verify --deep --strict --verbose=4 "$APP"
           codesign -dv --verbose=4 "$APP" 2>&1
+
+          ENTITLEMENTS="$(codesign -d --entitlements :- "$APP" 2>/dev/null || true)"
+          printf '%s\n' "$ENTITLEMENTS"
+          if printf '%s' "$ENTITLEMENTS" | grep -q 'keychain-access-groups'; then
+            echo 'Ad-hoc Lite app must not claim restricted keychain-access-groups entitlement.' >&2
+            exit 1
+          fi
 
           ZIP="$(find release -maxdepth 1 -type f -name '*mac-*.zip' -print -quit)"
           if [ -z "$ZIP" ]; then
