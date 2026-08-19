@@ -47,15 +47,18 @@ module.exports = {
   }),
   mac: {
     ...(base.mac || {}),
+    icon: 'tmp/lite-icon.png',
     identity: null,
     target: [{ target: 'zip', arch: [currentArch] }],
   },
   win: {
     ...(base.win || {}),
+    icon: 'tmp/lite-icon.png',
     target: [{ target: 'nsis', arch: [currentArch] }],
   },
   linux: {
     ...(base.linux || {}),
+    icon: 'tmp/lite-icon.png',
     target: [{ target: 'AppImage', arch: [currentArch] }],
   },
 };
