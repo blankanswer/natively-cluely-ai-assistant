@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Ad-hoc / CI macOS entitlements.
+
+      Keep this file intentionally free of RESTRICTED entitlements. In particular,
+      keychain-access-groups requires authorization from a macOS provisioning profile.
+      An ad-hoc signature has no Developer ID identity/profile to authorize that claim;
+      taskgated then rejects process launch with RBSRequestErrorDomain Code=5 / POSIX 153
+      even though `codesign --verify` succeeds.
+
+      The entries below configure Hardened Runtime/resource access and are safe to use
+      on the optional NATIVELY_ADHOC_HARDENED=1 test path. The default Lite CI path is
+      non-hardened, but retaining these keeps one entitlement file usable for both modes.
+      Production Developer ID builds continue to use entitlements.mac.plist.
+    -->
+
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>
