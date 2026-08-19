@@ -9,7 +9,7 @@
       keychain-access-groups requires authorization from a macOS provisioning profile.
       An ad-hoc signature has no Developer ID identity/profile to authorize that claim;
       taskgated then rejects process launch with RBSRequestErrorDomain Code=5 / POSIX 153
-      even though `codesign --verify` succeeds.
+      even though `codesign` verification succeeds.
 
       The entries below configure Hardened Runtime/resource access and are safe to use
       on the optional NATIVELY_ADHOC_HARDENED=1 test path. The default Lite CI path is
