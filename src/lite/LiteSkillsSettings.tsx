@@ -284,4 +284,7 @@ export const LiteSkillsSettings: React.FC = () => {
   );
 };
 
+// LiteSettingsOverlay imports the upstream symbol name. Vite aliases that
+// module to this file in Lite builds, so keep a named compatibility export.
+export { LiteSkillsSettings as SkillsSettings };
 export default LiteSkillsSettings;
