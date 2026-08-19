@@ -1,0 +1,222 @@
+name: Lite CN Release (signed macOS)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/lite-cn-custom-stt
+
+permissions:
+  contents: write
+
+jobs:
+  release-macos:
+    # Normal development pushes do not spend notarization/signing minutes. A commit
+    # carrying [release] (like the one introducing this workflow), or a manual
+    # workflow_dispatch, is an explicit release request.
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release]')
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout Lite branch
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          lfs: false
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate signing and notarization secrets
+        shell: bash
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MACOS_CERT_P12_BASE64" ] || [ -z "$MACOS_CERT_PASSWORD" ]; then
+            echo '::error::Missing MACOS_CERT_P12_BASE64 or MACOS_CERT_PASSWORD. Export a Developer ID Application certificate (.p12) and add both repository secrets.'
+            exit 1
+          fi
+
+          if [ -n "$APPLE_API_KEY_P8_BASE64" ] && [ -n "$APPLE_API_KEY_ID" ]; then
+            echo 'Notarization strategy: App Store Connect API key.'
+          elif [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]; then
+            echo 'Notarization strategy: Apple ID app-specific password.'
+          else
+            echo '::error::Missing notarization credentials. Configure APPLE_API_KEY_P8_BASE64 + APPLE_API_KEY_ID (recommended), or APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD.'
+            exit 1
+          fi
+
+      - name: Install dependencies without upstream postinstall
+        shell: bash
+        run: npm ci --ignore-scripts
+
+      - name: Apply dependency patches
+        shell: bash
+        run: npx patch-package
+
+      - name: Prepare Lite native dependencies
+        shell: bash
+        env:
+          NATIVELY_LITE_CN: '1'
+        run: |
+          set -euo pipefail
+          npm rebuild sharp
+          node scripts/build-native.js
+          node scripts/rebuild-native-electron.js
+          node scripts/verify-native-arch.js
+
+      - name: Build Lite renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          node node_modules/typescript7/lib/tsc.js -p tsconfig.json --noEmit
+          npx vite build --config vite.config.lite.mts
+
+      - name: Build Lite Electron main process
+        shell: bash
+        run: node scripts/build-electron-lite.js
+
+      - name: Import Developer ID Application certificate
+        shell: bash
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/natively-lite-developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/natively-lite-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+
+          printf '%s' "$MACOS_CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" "login.keychain-db"
+
+          echo 'Developer ID identities available to codesign:'
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+          echo "CSC_LINK=$CERT_PATH" >> "$GITHUB_ENV"
+          echo "CSC_KEY_PASSWORD=$MACOS_CERT_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Prepare Apple notarization credentials
+        shell: bash
+        env:
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "$APPLE_API_KEY_P8_BASE64" ]; then
+            API_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+            printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$API_KEY_PATH"
+            chmod 600 "$API_KEY_PATH"
+            echo "APPLE_API_KEY=$API_KEY_PATH" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install DMG builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v create-dmg >/dev/null 2>&1; then
+            brew install create-dmg
+          fi
+          create-dmg --version || true
+
+      - name: Build, sign, notarize and staple Lite macOS release
+        shell: bash
+        env:
+          NATIVELY_LITE_CN: '1'
+          NATIVELY_PRODUCTION_SIGN: '1'
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID || 'BJM29W3UQ6' }}
+        run: |
+          set -euo pipefail
+          node scripts/package-app.js --config electron-builder.lite.signed.cjs --publish never
+
+      - name: Verify signed app and DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$(find release -maxdepth 2 -type d -name 'Natively Lite CN.app' -print -quit)"
+          DMG="$(find release -maxdepth 1 -type f -name 'Natively Lite CN-*-mac-arm64.dmg' -print -quit)"
+          ZIP="$(find release -maxdepth 1 -type f -name 'Natively Lite CN-*-mac-arm64.zip' -print -quit)"
+
+          test -n "$APP" || { echo 'Signed app not found' >&2; exit 1; }
+          test -n "$DMG" || { echo 'Signed DMG not found' >&2; exit 1; }
+          test -n "$ZIP" || { echo 'Signed ZIP not found' >&2; exit 1; }
+
+          BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
+          test "$BUNDLE_ID" = 'com.blankanswer.natively-lite-cn' || {
+            echo "Unexpected bundle id: $BUNDLE_ID" >&2
+            exit 1
+          }
+
+          codesign --verify --deep --strict --verbose=4 "$APP"
+          spctl -a -vvv -t execute "$APP"
+          xcrun stapler validate "$APP"
+          codesign --verify --verbose=2 "$DMG"
+          xcrun stapler validate "$DMG"
+          spctl -a -vvv -t open --context context:primary-signature "$DMG" || true
+
+          echo "APP=$APP"
+          echo "DMG=$DMG"
+          echo "ZIP=$ZIP"
+          ls -lh "$DMG" "$ZIP"
+
+      - name: Upload signed release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: natively-lite-cn-macos-signed
+          path: |
+            release/Natively Lite CN-*-mac-arm64.dmg
+            release/Natively Lite CN-*-mac-arm64.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="lite-cn-v${VERSION}-build${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          TITLE="Natively Lite CN ${VERSION} — macOS arm64"
+
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          Signed macOS prerelease for **Natively Lite CN ${VERSION}**.
+
+          - Bundle ID: \`com.blankanswer.natively-lite-cn\`
+          - Architecture: Apple Silicon (arm64)
+          - Developer ID signed with Hardened Runtime
+          - Apple notarized and stapled
+          - DMG is the recommended installer; ZIP is provided as a fallback
+          - New neon four-tile application icon
+
+          A correctly downloaded notarized DMG should open through Gatekeeper without requiring \`xattr -dr com.apple.quarantine\`.
+          EOF
+
+          gh release create "$TAG" \
+            release/Natively\ Lite\ CN-*-mac-arm64.dmg \
+            release/Natively\ Lite\ CN-*-mac-arm64.zip \
+            --target "$GITHUB_SHA" \
+            --title "$TITLE" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            --prerelease
