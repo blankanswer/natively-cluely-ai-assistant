@@ -1,5 +1,5 @@
 name: Lite CN Build
-# Standalone cleanup gate 1: upstream-only repos/workflows removed.
+# Standalone cleanup gate 2: upstream-only tests, release tooling, and repo metadata removed.
 
 on:
   workflow_dispatch:
@@ -11,18 +11,15 @@ on:
       - 'native-module/**'
       - 'assets/lite-icon.svg'
       - 'build/entitlements.mac.adhoc.plist'
-      - 'build/entitlements.mac.lite.plist'
       - 'package.json'
       - 'package-lock.json'
+      - 'tsconfig.json'
       - 'scripts/package-app.js'
       - 'scripts/build-electron-lite.js'
       - 'scripts/ad-hoc-sign.js'
-      - 'scripts/afterAllArtifactBuildLite.cjs'
       - 'vite.config.lite.mts'
       - 'electron-builder.lite.cjs'
-      - 'electron-builder.lite.signed.cjs'
       - '.github/workflows/lite-cn-build.yml'
-      - '.github/workflows/lite-cn-release.yml'
 
 permissions:
   contents: read
@@ -79,20 +76,18 @@ jobs:
 
       - name: Build Lite renderer
         shell: bash
-        run: |
-          node node_modules/typescript7/lib/tsc.js -p tsconfig.json --noEmit
-          npx vite build --config vite.config.lite.mts
+        run: npm run build:lite:renderer
 
       - name: Build Lite Electron main process
         shell: bash
-        run: node scripts/build-electron-lite.js
+        run: npm run build:lite:electron
 
       - name: Package Lite CN
         shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           NATIVELY_LITE_CN: '1'
-        run: node scripts/package-app.js --config electron-builder.lite.cjs --publish never
+        run: npm run package:lite
 
       - name: Verify packaged macOS app and ZIP
         if: runner.os == 'macOS'
