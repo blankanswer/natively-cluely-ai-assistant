@@ -8,12 +8,17 @@ on:
       - 'src/**'
       - 'electron/**'
       - 'native-module/**'
+      - 'assets/lite-icon.svg'
       - 'build/entitlements.mac.adhoc.plist'
+      - 'build/entitlements.mac.lite.plist'
       - 'scripts/build-electron-lite.js'
       - 'scripts/ad-hoc-sign.js'
+      - 'scripts/afterAllArtifactBuildLite.cjs'
       - 'vite.config.lite.mts'
       - 'electron-builder.lite.cjs'
+      - 'electron-builder.lite.signed.cjs'
       - '.github/workflows/lite-cn-build.yml'
+      - '.github/workflows/lite-cn-release.yml'
 
 permissions:
   contents: read
