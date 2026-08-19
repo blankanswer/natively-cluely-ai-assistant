@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d0b18"/>
+      <stop offset="0.52" stop-color="#070912"/>
+      <stop offset="1" stop-color="#07131b"/>
+    </linearGradient>
+    <linearGradient id="purple" x1="0.08" y1="0.06" x2="0.95" y2="0.95">
+      <stop offset="0" stop-color="#ef74ff"/>
+      <stop offset="0.38" stop-color="#b83cff"/>
+      <stop offset="0.72" stop-color="#7835f4"/>
+      <stop offset="1" stop-color="#4c14d8"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0.05" y1="0.04" x2="0.95" y2="1">
+      <stop offset="0" stop-color="#2fdcff"/>
+      <stop offset="0.32" stop-color="#13b9ff"/>
+      <stop offset="0.72" stop-color="#1685ff"/>
+      <stop offset="1" stop-color="#1764f3"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0.08" y1="0.04" x2="0.92" y2="1">
+      <stop offset="0" stop-color="#5dfff4"/>
+      <stop offset="0.4" stop-color="#16e5e7"/>
+      <stop offset="1" stop-color="#07b8d8"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.35" stop-color="#8c7cff" stop-opacity="0.28"/>
+      <stop offset="0.72" stop-color="#2ccaff" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#16e7e1" stop-opacity="0.36"/>
+    </linearGradient>
+    <radialGradient id="ambient" cx="50%" cy="49%" r="62%">
+      <stop offset="0.52" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="0.78" stop-color="#4e2cff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#14dcff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="ambientBlur" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="42"/>
+    </filter>
+    <filter id="tileShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#000000" flood-opacity="0.72"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="14" flood-color="#8b39ff" flood-opacity="0.34"/>
+    </filter>
+    <filter id="blueShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#000000" flood-opacity="0.72"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="14" flood-color="#14bfff" flood-opacity="0.38"/>
+    </filter>
+    <filter id="cyanShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#000000" flood-opacity="0.72"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="14" flood-color="#19f0ed" flood-opacity="0.38"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <ellipse cx="512" cy="518" rx="445" ry="440" fill="url(#ambient)" filter="url(#ambientBlur)" opacity="0.78"/>
+
+  <rect x="88" y="88" width="848" height="848" rx="194" fill="#080a10"/>
+  <rect x="91" y="91" width="842" height="842" rx="191" fill="none" stroke="url(#rim)" stroke-width="6" opacity="0.8"/>
+  <path d="M180 167 C276 123 722 121 838 171" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="18" stroke-linecap="round"/>
+
+  <!-- One continuous purple form: top-left tile flows into bottom-right tile. -->
+  <path
+    d="M250 248
+       Q250 204 294 204
+       H438
+       Q500 204 500 266
+       V382
+       Q500 446 566 446
+       H712
+       Q776 446 776 510
+       V716
+       Q776 778 714 778
+       H568
+       Q504 778 504 716
+       V592
+       Q504 530 440 530
+       H296
+       Q234 530 234 468
+       V292
+       Q234 262 250 248 Z"
+    fill="url(#purple)"
+    filter="url(#tileShadow)"
+  />
+  <path d="M272 230 H430 Q470 230 474 266" fill="none" stroke="#ffffff" stroke-opacity="0.38" stroke-width="10" stroke-linecap="round"/>
+  <path d="M550 469 H697 Q743 469 750 508" fill="none" stroke="#ffffff" stroke-opacity="0.16" stroke-width="8" stroke-linecap="round"/>
+
+  <rect x="564" y="206" width="244" height="244" rx="68" fill="url(#blue)" filter="url(#blueShadow)"/>
+  <path d="M603 223 H761 Q789 223 793 251" fill="none" stroke="#ffffff" stroke-opacity="0.38" stroke-width="9" stroke-linecap="round"/>
+
+  <rect x="236" y="566" width="244" height="244" rx="68" fill="url(#cyan)" filter="url(#cyanShadow)"/>
+  <path d="M274 583 H431 Q460 583 464 611" fill="none" stroke="#ffffff" stroke-opacity="0.4" stroke-width="9" stroke-linecap="round"/>
+
+  <rect x="108" y="108" width="808" height="808" rx="176" fill="none" stroke="#000000" stroke-opacity="0.28" stroke-width="8"/>
+</svg>
