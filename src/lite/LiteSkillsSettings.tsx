@@ -222,7 +222,7 @@ export const LiteSkillsSettings: React.FC = () => {
             className="min-h-[360px] max-h-[52vh] w-full resize-y rounded-lg border border-border-subtle bg-bg-input p-3 font-mono text-[12px] leading-5 text-text-primary outline-none focus:border-accent-primary"
           />
           <div className="mt-3 flex flex-wrap justify-end gap-2">
-            <button onClick={() => void resetBuiltin()} disabled={saving} className={buttonClass}><RotateCcw size={13} />æ¢å¤Íé»˜è®¤</button>
+            <button onClick={() => void resetBuiltin()} disabled={saving} className={buttonClass}><RotateCcw size={13} />æ¢å¤é»˜è®¤</button>
             <button onClick={() => void saveBuiltin()} disabled={saving} className="inline-flex items-center gap-1.5 rounded-lg bg-accent-primary px-4 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"><Save size={13} />{saving ? 'ä¿å­˜ä¸­â€¦' : 'ä¿å­˜'}</button>
           </div>
         </section>
@@ -257,7 +257,7 @@ export const LiteSkillsSettings: React.FC = () => {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="truncate text-sm font-medium text-text-primary">{skill.name}</span>
-                    <span className="shrink-0 font-mono text-[10px] text-text-text-tertiary">/{skill.id}</span>
+                    <span className="shrink-0 font-mono text-[10px] text-text-tertiary">/{skill.id}</span>
                   </div>
                   <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-text-secondary">{skill.description}</p>
                 </div>
@@ -270,8 +270,18 @@ export const LiteSkillsSettings: React.FC = () => {
               </div>
             </div>
           ))}
-          {!loading && custom.length === 0 && <div className="py-5 text-center text-xs text-text-tertiary">æš‚å¦—ä»–è‡ªå®šä¹‰ Skillã€‚</div>}
+          {!loading && custom.length === 0 && <div className="py-5 text-center text-xs text-text-tertiary">æš‚æ— è‡ªå®šä¹‰ Skillã€‚</div>}
         </div>
 
         <div className="mt-3 flex justify-end">
-          <button onClick={() => void api.skillsOpenFolder?.()} className={buttonClass}><FolderOpen size={13} />æ‰“å¼€ Skills æ–‡ä»¶å¤¹âö°ð½‰ÕÑÑ½¸ø(€€€€€€€€ð½‘¥Øø(€€€€€€ð½Í•Ñ¥½¸ø((€€€€€íÍÕ•ÍÌ€˜˜€ñ‘¥Ø±…ÍÍ9…µ”ô‰™±•à¥Ñ•µÌµÍÑ…ÉÐ…À´ÈÉ½Õ¹‘•µ±œ‰½É‘•È‰½É‘•Èµ•µ•É…±´ÔÀÀ¼ÈÀ‰œµ•µ•É…±´ÔÀÀ¼ÄÀÁà´ÌÁä´ÈÑ•áÐµáÌÑ•áÐµ•µ•É…±´ÐÀÀˆøñ¡•­¥É±”ÈÍ¥é”õìÄÑô±…ÍÍ9…µ”ô‰µÐ´À¸ÔÍ¡É¥¹¬´Àˆ€¼ùíÍÕ•ÍÍôð½‘¥Øùô(€€€€€íÍÑ…ÑÕÌ€˜˜€ñ‘¥Ø±…ÍÍ9…µ”ô‰É½Õ¹‘•µ±œ‰½É‘•È‰½É‘•ÈµÉ•´ÔÀÀ¼ÈÀ‰œµÉ•´ÔÀÀ¼ÄÀÁà´ÌÁä´ÈÑ•áÐµáÌÑ•áÐµÉ•´ÐÀÀˆùíÍÑ…ÑÕÍôð½‘¥Øùô(€€€€ð½‘¥Øø(€€¤ì)ôì()•áÁ½ÉÐ‘•™…Õ±Ð1¥Ñ•M­¥±±ÍM•ÑÑ¥¹Ìì(
+          <button onClick={() => void api.skillsOpenFolder?.()} className={buttonClass}><FolderOpen size={13} />æ‰“å¼€ Skills æ–‡ä»¶å¤¹</button>
+        </div>
+      </section>
+
+      {success && <div className="flex items-start gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-400"><CheckCircle2 size={14} className="mt-0.5 shrink-0" />{success}</div>}
+      {status && <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">{status}</div>}
+    </div>
+  );
+};
+
+export default LiteSkillsSettings;
