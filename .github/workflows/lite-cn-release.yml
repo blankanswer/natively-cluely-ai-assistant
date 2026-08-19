@@ -200,7 +200,6 @@ jobs:
           retention-days: 30
 
       - name: Publish GitHub prerelease
-        if: github.event_name != 'pull_request'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
