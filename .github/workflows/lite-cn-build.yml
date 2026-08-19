@@ -7,7 +7,9 @@ on:
     paths:
       - 'src/**'
       - 'electron/**'
+      - 'native-module/**'
       - 'scripts/build-electron-lite.js'
+      - 'scripts/ad-hoc-sign.js'
       - 'vite.config.lite.mts'
       - 'electron-builder.lite.cjs'
       - '.github/workflows/lite-cn-build.yml'
@@ -77,6 +79,42 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           NATIVELY_LITE_CN: '1'
         run: node scripts/package-app.js --config electron-builder.lite.cjs --publish never
+
+      - name: Verify packaged macOS app and ZIP
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="$(find release -maxdepth 2 -type d -name 'Natively Lite CN.app' -print -quit)"
+          if [ -z "$APP" ]; then
+            echo 'Natively Lite CN.app not found under release/' >&2
+            exit 1
+          fi
+
+          echo "Verifying packed app: $APP"
+          codesign --verify --deep --strict --verbose=4 "$APP"
+          codesign -dv --verbose=4 "$APP" 2>&1
+
+          ZIP="$(find release -maxdepth 1 -type f -name '*mac-*.zip' -print -quit)"
+          if [ -z "$ZIP" ]; then
+            echo 'macOS ZIP artifact not found under release/' >&2
+            exit 1
+          fi
+
+          rm -rf /tmp/natively-lite-zip-smoke
+          mkdir -p /tmp/natively-lite-zip-smoke
+          ditto -x -k "$ZIP" /tmp/natively-lite-zip-smoke
+
+          ZIP_APP="$(find /tmp/natively-lite-zip-smoke -maxdepth 2 -type d -name 'Natively Lite CN.app' -print -quit)"
+          if [ -z "$ZIP_APP" ]; then
+            echo 'Natively Lite CN.app not found after ZIP extraction' >&2
+            exit 1
+          fi
+
+          echo "Verifying extracted ZIP app: $ZIP_APP"
+          codesign --verify --deep --strict --verbose=4 "$ZIP_APP"
+          file "$ZIP_APP/Contents/MacOS/Natively Lite CN"
 
       - name: Show package sizes
         if: always()
