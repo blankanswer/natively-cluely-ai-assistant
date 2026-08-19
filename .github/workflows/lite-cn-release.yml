@@ -5,16 +5,25 @@ on:
   push:
     branches:
       - agent/lite-cn-custom-stt
+  pull_request:
+    branches: [main]
+    paths:
+      - 'assets/lite-icon.svg'
+      - 'build/entitlements.mac.lite.plist'
+      - 'electron-builder.lite.cjs'
+      - 'electron-builder.lite.signed.cjs'
+      - 'scripts/afterAllArtifactBuildLite.cjs'
+      - '.github/workflows/lite-cn-release.yml'
 
 permissions:
   contents: write
 
 jobs:
   release-macos:
-    # Normal development pushes do not spend notarization/signing minutes. A commit
-    # carrying [release] (like the one introducing this workflow), or a manual
-    # workflow_dispatch, is an explicit release request.
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release]')
+    # PR runs are a visible signing/notarization validation pass. Push runs spend
+    # release minutes only when the commit explicitly carries [release]. Manual
+    # dispatch is always allowed.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || contains(github.event.head_commit.message, '[release]')
     runs-on: macos-14
     timeout-minutes: 90
 
@@ -191,6 +200,7 @@ jobs:
           retention-days: 30
 
       - name: Publish GitHub prerelease
+        if: github.event_name != 'pull_request'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
