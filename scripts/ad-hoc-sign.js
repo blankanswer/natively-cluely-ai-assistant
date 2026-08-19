@@ -142,7 +142,7 @@ exports.default = async function (context) {
     // ── Step 0: Verify packed native binaries match the target arch ──
     // MUST run before signing and before any early return (signed path returns
     // early once it detects a Developer ID identity). A wrong-arch binary here
-    // means the DMG for this arch would crash on launch — fail loudly now.
+    // means the package for this arch would crash on launch — fail loudly now.
     const targetArchName = ebArchToName(context.arch);
     verifyPackedNativeArch(appPath, targetArchName);
 
@@ -160,9 +160,8 @@ exports.default = async function (context) {
     // ── Production guard: never ad-hoc sign when a real Developer ID identity is configured ──
     // When CSC_LINK / CSC_NAME / NATIVELY_SIGN_IDENTITY is present, electron-builder performs
     // proper inside-out Developer ID signing with the entitlements + hardened runtime declared
-    // in package.json, and electron-builder's built-in mac.notarize notarizes + staples.
-    // Running `codesign --sign -` here would clobber that real signature with an ad-hoc one,
-    // which can never be notarized — so we skip the ad-hoc step entirely in that case.
+    // in the production config. Running `codesign --sign -` here would clobber that real
+    // signature with an ad-hoc one, which can never be notarized.
     const hasRealIdentity = !!(
         process.env.NATIVELY_PRODUCTION_SIGN === '1' || // set by electron-builder.signed.cjs
         process.env.CSC_LINK ||
@@ -183,47 +182,32 @@ exports.default = async function (context) {
     // to opt in when testing entitlement/permission behavior locally.
     const hardenedOpt = process.env.NATIVELY_ADHOC_HARDENED === '1' ? '--options runtime ' : '';
 
-    // ── Step 2: Ad-hoc sign the application (DEV / local distribution only) ──
-    // Resolve the path to the entitlements file so V8 gets JIT memory permissions
+    // ── Step 2: Ad-hoc sign the COMPLETE application (DEV / CI distribution only) ──
+    // IMPORTANT: this bundle-level signature must be the LAST mutation of any file under
+    // `${appName}.app`. The outer CodeResources seal records nested code/resources. Re-signing
+    // a .node/.dylib AFTER the app has been sealed changes that nested file and produces:
+    //   "a sealed resource is missing or invalid" / "file modified: ...index.darwin-arm64.node"
+    // which Gatekeeper surfaces as "app is damaged".
+    //
+    // `--deep` recursively signs nested Mach-O code first and seals the outer bundle last.
+    // Privacy access (microphone / screen capture / system audio) is authorized against the
+    // host app process and its Info.plist/TCC state; native .node addons do NOT need a second
+    // post-bundle entitlement signature.
     const entitlementsPath = path.join(context.packager.info.projectDir, 'build', 'entitlements.mac.plist');
-    
-    // ── Step 2a: Sign the main app bundle with --deep first ──
-    // --deep recurses into nested Mach-O binaries (frameworks, helpers, .node files).
-    // It signs them with --sign - only (no custom entitlements on nested items).
-    // We MUST do this before signing the .node files with entitlements, because
-    // --deep would otherwise overwrite the entitlement-signed .node files.
-    console.log(`[Ad-Hoc Signing] Signing main app ${appPath} with entitlements...`);
+
+    console.log(`[Ad-Hoc Signing] Signing complete app ${appPath} with entitlements...`);
 
     try {
-        // --force: replace existing signature
-        // --deep: sign nested code (frameworks, helpers, .dylib, .node)
-        // --entitlements: attach entitlements to the top-level app bundle
-        // --sign -: ad-hoc signature
-        execSync(`codesign --force --deep ${hardenedOpt}--entitlements "${entitlementsPath}" --sign - "${appPath}"`, { stdio: 'inherit' });
-        console.log('[Ad-Hoc Signing] Successfully signed the application with entitlements.');
+        execSync(
+            `codesign --force --deep ${hardenedOpt}--entitlements "${entitlementsPath}" --sign - "${appPath}"`,
+            { stdio: 'inherit' }
+        );
+        // Verify immediately so a future afterPack change cannot silently ship another
+        // internally-invalid app bundle. This is the exact check users can reproduce locally.
+        execSync(`codesign --verify --deep --strict --verbose=4 "${appPath}"`, { stdio: 'inherit' });
+        console.log('[Ad-Hoc Signing] Successfully signed and verified the complete application.');
     } catch (error) {
-        console.error('[Ad-Hoc Signing] Failed to sign the application:', error);
+        console.error('[Ad-Hoc Signing] Failed to sign/verify the application:', error);
         throw error;
-    }
-
-    // ── Step 2b: Re-sign .node binaries with entitlements AFTER --deep ──
-    // codesign --deep re-signs nested .node binaries without entitlements (it only
-    // applies entitlements to the top-level item). We re-sign them here AFTER --deep
-    // so the entitlements (JIT / library-validation) are preserved on the native
-    // module binary. (Screen/system-audio access is pure TCC — no entitlement.)
-    const unpackedNativeDir = path.join(appPath, 'Contents', 'Resources', 'app.asar.unpacked', 'native-module');
-    if (fs.existsSync(unpackedNativeDir)) {
-        const files = fs.readdirSync(unpackedNativeDir);
-        for (const file of files) {
-            if (file.endsWith('.node')) {
-                const nodePath = path.join(unpackedNativeDir, file);
-                console.log(`[Ad-Hoc Signing] Re-signing ${file} with entitlements (post --deep)...`);
-                try {
-                    execSync(`codesign --force ${hardenedOpt}--entitlements "${entitlementsPath}" --sign - "${nodePath}"`, { stdio: 'inherit' });
-                } catch (error) {
-                    console.error(`[Ad-Hoc Signing] Failed to sign ${file}:`, error);
-                }
-            }
-        }
     }
 };
