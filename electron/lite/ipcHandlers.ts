@@ -57,8 +57,6 @@ function makeProbeWav(): Buffer {
 function syncLiteRecoverySurfaces(appState: AppState): void {
   if (process.platform !== 'win32' && process.platform !== 'darwin') return;
 
-  // Upstream setUndetectable(true) may destroy the tray/status item. Re-create
-  // it after every stealth transition and once at Lite IPC initialization.
   appState.showTray();
 
   if (process.platform === 'win32') {
@@ -72,8 +70,6 @@ function syncLiteRecoverySurfaces(appState: AppState): void {
     return;
   }
 
-  // macOS has two separate surfaces: Dock (bottom) and menu-bar status item
-  // (top). Keep the menu-bar item, but hide the Dock while undetectable.
   try {
     const dock = (app as any).dock;
     if (dock) {
@@ -100,9 +96,6 @@ function installLiteRecoveryPolicy(appState: AppState): void {
   if (marker.__liteRecoveryInstalled) return;
   marker.__liteRecoveryInstalled = true;
 
-  // Called during launcher creation and every setUndetectable transition in the
-  // upstream WindowHelper. Replacing the instance method also makes persisted
-  // stealth state recoverable on a cold start.
   windowHelper.syncLauncherTaskbarForStealth = () => {
     syncLiteRecoverySurfaces(appState);
   };
@@ -132,9 +125,6 @@ function showLiteMeeting(appState: AppState): void {
 
   const wh = appState.getWindowHelper();
   syncLiteRecoverySurfaces(appState);
-
-  // Hide/Show can leave Electron's native window in ignoreMouseEvents=true.
-  // Restore interaction BEFORE showing so the first frame is already clickable.
   wh.setOverlayHoverInteractive(true);
   wh.setWindowMode('overlay', true);
   const overlay = wh.getOverlayWindow();
@@ -171,6 +161,17 @@ function installLiteTrayMenu(appState: AppState): void {
   const state = appState as any;
   if (state.__liteTrayMenuInstalled) return;
   state.__liteTrayMenuInstalled = true;
+
+  // Upstream's macOS stealth enforcement loop repeatedly calls hideTray() while
+  // undetectable (not just once at toggle time). A one-shot showTray() would
+  // therefore disappear again a moment later. Lite treats the menu-bar item as
+  // a non-negotiable recovery control, so suppress tray destruction on macOS.
+  if (process.platform === 'darwin') {
+    state.hideTray = () => {
+      // Intentionally no-op in Lite. The process exit tears the status item down
+      // naturally; stealth only hides the Dock tile, never this recovery item.
+    };
+  }
 
   state.centerAndShowWindow = () => showLiteLauncher(appState);
   state.updateTrayMenu = () => {
@@ -211,7 +212,6 @@ function installLiteTrayMenu(appState: AppState): void {
     ]));
   };
 
-  // Ensure an already-created tray gets the Lite menu immediately.
   appState.showTray();
   state.updateTrayMenu();
 }
@@ -223,7 +223,6 @@ export function initializeIpcHandlers(appState: AppState): void {
   installLiteAssistantRuntime(appState);
   syncLiteRecoverySurfaces(appState);
 
-  // ── Lite recovery/safety overrides ───────────────────────────────────────
   ipcMain.removeHandler('set-undetectable');
   ipcMain.handle('set-undetectable', async (_event, state: boolean) => {
     appState.setUndetectable(Boolean(state));
@@ -257,10 +256,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true, surface: 'lite-settings', tab: 'audio' };
   });
 
-  // Overlay expansion is a visibility operation AND an interaction reset. A
-  // previous collapse may have left the native BrowserWindow click-through;
-  // restoring this before show prevents the "looks visible but clicks through"
-  // state until the user navigates away and back.
   ipcMain.removeHandler('show-window');
   ipcMain.handle('show-window', async (_event, inactive?: boolean) => {
     const wh = appState.getWindowHelper();
@@ -271,10 +266,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
-  // Hide/Show is a renderer expansion state, NOT capture visibility. In Lite an
-  // overlay-originated hide leaves the BrowserWindows alive. Crucially, do NOT
-  // force ignoreMouseEvents=true here: once ignored, the window cannot receive
-  // the mousemove that would make the hover gate interactive again on Show.
   ipcMain.removeHandler('hide-window');
   ipcMain.handle('hide-window', async (event) => {
     const wh = appState.getWindowHelper();
@@ -288,9 +279,6 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true, collapsedOnly: false };
   });
 
-  // Whole-window passthrough has no mouse-reachable recovery by construction.
-  // Keep the authoritative state false in Lite; transparent margins still use
-  // WindowHelper's bounded hover click-through policy.
   const forcePassthroughOff = () => {
     appState.setOverlayMousePassthrough(false);
     appState.getWindowHelper().setOverlayHoverInteractive(true);
@@ -303,7 +291,6 @@ export function initializeIpcHandlers(appState: AppState): void {
   ipcMain.removeHandler('get-overlay-mouse-passthrough');
   ipcMain.handle('get-overlay-mouse-passthrough', async () => false);
 
-  // ── Assistant test ───────────────────────────────────────────────────────
   ipcMain.removeHandler('test-llm-connection');
   ipcMain.handle('test-llm-connection', async (_event, provider: string) => {
     if (provider === 'openai') return testLiteAssistantConnection();
@@ -313,7 +300,6 @@ export function initializeIpcHandlers(appState: AppState): void {
   ipcMain.removeHandler('lite:test-assistant-connection');
   ipcMain.handle('lite:test-assistant-connection', async () => testLiteAssistantConnection());
 
-  // ── OpenAI-compatible REST STT probe ─────────────────────────────────────
   ipcMain.removeHandler('test-stt-connection');
   ipcMain.handle(
     'test-stt-connection',
