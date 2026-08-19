@@ -1,4 +1,5 @@
 name: Lite CN Build
+# Standalone cleanup gate 1: upstream-only repos/workflows removed.
 
 on:
   workflow_dispatch:
