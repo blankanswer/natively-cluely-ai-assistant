@@ -76,7 +76,7 @@ function run(scriptPath, args) {
   return result.status;
 }
 
-function usesLiteBuilderConfig(args) {
+function usesSotturaBuilderConfig(args) {
   return args.some((arg, index) => {
     if (arg === '--config') {
       return path.basename(args[index + 1] || '') === 'electron-builder.lite.cjs';
@@ -90,25 +90,24 @@ function usesLiteBuilderConfig(args) {
 
 /**
  * electron-builder 26.x's legacy app-builder icon path is reliable for PNG,
- * ICNS and ICO, but it cannot rasterize our Lite SVG consistently on macOS and
- * Windows. Keep the SVG as the source of truth and generate a 1024x1024 PNG
- * just before Lite packaging. `tmp/` is already gitignored and is not part of
- * the packaged application files.
+ * ICNS and ICO, but it cannot rasterize the Sottura SVG consistently on macOS
+ * and Windows. Keep SVG as the source of truth and generate a 1024x1024 PNG
+ * just before Sottura packaging. `tmp/` is gitignored and is not packaged.
  */
-async function prepareLiteIcon() {
+async function prepareSotturaIcon() {
   const projectRoot = path.join(__dirname, '..');
-  const source = path.join(projectRoot, 'assets', 'lite-icon.svg');
-  const target = path.join(projectRoot, 'tmp', 'lite-icon.png');
+  const source = path.join(projectRoot, 'assets', 'sottura-icon.svg');
+  const target = path.join(projectRoot, 'tmp', 'sottura-icon.png');
 
   if (!fs.existsSync(source)) {
-    throw new Error(`Lite icon source is missing: ${source}`);
+    throw new Error(`Sottura icon source is missing: ${source}`);
   }
 
   fs.mkdirSync(path.dirname(target), { recursive: true });
 
   const sourceMtime = fs.statSync(source).mtimeMs;
   if (fs.existsSync(target) && fs.statSync(target).mtimeMs >= sourceMtime) {
-    console.log('[package-app] Reusing generated tmp/lite-icon.png');
+    console.log('[package-app] Reusing generated tmp/sottura-icon.png');
     return;
   }
 
@@ -121,21 +120,21 @@ async function prepareLiteIcon() {
   const metadata = await sharp(target).metadata();
   if (metadata.width !== 1024 || metadata.height !== 1024 || metadata.format !== 'png') {
     throw new Error(
-      `Generated Lite icon is invalid: format=${metadata.format}, ${metadata.width}x${metadata.height}`
+      `Generated Sottura icon is invalid: format=${metadata.format}, ${metadata.width}x${metadata.height}`
     );
   }
 
-  console.log('[package-app] Generated tmp/lite-icon.png from assets/lite-icon.svg (1024x1024)');
+  console.log('[package-app] Generated tmp/sottura-icon.png from assets/sottura-icon.svg (1024x1024)');
 }
 
 async function main() {
   const builderArgs = process.argv.slice(2);
 
-  if (usesLiteBuilderConfig(builderArgs)) {
+  if (usesSotturaBuilderConfig(builderArgs)) {
     try {
-      await prepareLiteIcon();
+      await prepareSotturaIcon();
     } catch (error) {
-      console.error(`[package-app] Could not prepare Lite icon: ${error.message}`);
+      console.error(`[package-app] Could not prepare Sottura icon: ${error.message}`);
       process.exit(1);
     }
   }

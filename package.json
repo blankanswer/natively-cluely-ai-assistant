@@ -1,19 +1,22 @@
 {
-  "name": "natively",
+  "name": "sottura",
   "version": "2.8.5",
   "main": "dist-electron/electron/main.js",
   "engines": {
     "node": ">=22.6.0"
   },
-  "description": "Natively is a meeting notes app that uses AI to generate notes from your meetings.",
+  "description": "Sottura is a lightweight, Chinese-first desktop AI assistant with BYOK OpenAI-compatible APIs.",
   "scripts": {
     "clean": "rimraf dist dist-electron",
     "dev": "vite",
     "build": "npm run clean && node node_modules/typescript7/lib/tsc.js -p tsconfig.json && vite build",
     "build:electron": "node scripts/build-electron.js",
-    "build:lite:renderer": "node node_modules/typescript7/lib/tsc.js -p tsconfig.json --noEmit && vite build --config vite.config.lite.mts",
-    "build:lite:electron": "node scripts/build-electron-lite.js",
-    "package:lite": "node scripts/package-app.js --config electron-builder.lite.cjs --publish never",
+    "build:sottura:renderer": "node node_modules/typescript7/lib/tsc.js -p tsconfig.json --noEmit && vite build --config vite.config.lite.mts",
+    "build:sottura:electron": "node scripts/build-electron-lite.js",
+    "package:sottura": "node scripts/package-app.js --config electron-builder.lite.cjs --publish never",
+    "build:lite:renderer": "npm run build:sottura:renderer",
+    "build:lite:electron": "npm run build:sottura:electron",
+    "package:lite": "npm run package:sottura",
     "typecheck:electron": "node node_modules/typescript7/lib/tsc.js -p electron/tsconfig.json --noEmit",
     "typecheck:ts5": "tsc -p tsconfig.json --noEmit",
     "typecheck:ts5:electron": "tsc -p electron/tsconfig.json --noEmit",
@@ -59,9 +62,9 @@
   },
   "build": {
     "generateUpdatesFilesForAllChannels": true,
-    "appId": "com.electron.meeting-notes",
+    "appId": "com.blankanswer.sottura",
     "afterPack": "./scripts/ad-hoc-sign.js",
-    "productName": "Natively",
+    "productName": "Sottura",
     "files": [
       "dist",
       "dist-electron",
@@ -140,9 +143,9 @@
       "identity": null,
       "hardenedRuntime": false,
       "extendInfo": {
-        "NSScreenCaptureUsageDescription": "Natively needs Screen Recording permission to capture system audio for meeting transcription.",
-        "NSMicrophoneUsageDescription": "Natively needs microphone access to transcribe your voice during meetings.",
-        "NSAudioCaptureUsageDescription": "Natively needs system audio access to transcribe meeting audio."
+        "NSScreenCaptureUsageDescription": "Sottura needs Screen Recording permission to capture system audio and screenshots.",
+        "NSMicrophoneUsageDescription": "Sottura needs microphone access for speech transcription.",
+        "NSAudioCaptureUsageDescription": "Sottura needs system audio access for speech transcription."
       }
     },
     "win": {
@@ -189,19 +192,12 @@
       "deleteAppDataOnUninstall": false,
       "artifactName": "${productName}-Setup-${version}.${ext}"
     },
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "Natively-AI-assistant",
-        "repo": "natively-cluely-ai-assistant",
-        "releaseType": "release"
-      }
-    ],
+    "publish": null,
     "npmRebuild": false,
     "beforePack": "./scripts/rebuild-native-for-target.cjs"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": ["sottura", "desktop-ai", "byok"],
+  "author": "blankanswer",
   "license": "SEE LICENSE IN LICENSE",
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
@@ -317,5 +313,5 @@
       "react": "$react"
     }
   },
-  "nativelySigned": true
+  "nativelySigned": false
 }

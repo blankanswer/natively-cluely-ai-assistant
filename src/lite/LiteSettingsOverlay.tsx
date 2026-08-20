@@ -371,7 +371,7 @@ export default function LiteSettingsOverlay({ isOpen, onClose, initialTab }: Pro
       <div className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-border-subtle bg-bg-elevated shadow-2xl">
         <header className="flex shrink-0 items-center justify-between border-b border-border-subtle px-5 py-4">
           <div>
-            <h2 className="text-base font-semibold text-text-primary">Natively Lite CN 设置</h2>
+            <h2 className="text-base font-semibold text-text-primary">Sottura 设置</h2>
             <p className="mt-1 text-xs text-text-tertiary">中文优先 · BYOK · Chat Completions Assistant + REST STT</p>
           </div>
           <button onClick={onClose} className="rounded-lg p-2 text-text-secondary hover:bg-bg-item-active hover:text-text-primary" aria-label="关闭"><X size={18} /></button>
@@ -391,7 +391,7 @@ export default function LiteSettingsOverlay({ isOpen, onClose, initialTab }: Pro
               ))}
             </div>
             <div className="mt-4 rounded-lg border border-border-subtle bg-bg-input p-3 text-[11px] leading-5 text-text-tertiary">
-              Lite 保留 Assistant、STT、设备、快捷键、外观与 Skills。Calendar、付费/Trial、Natively Cloud、Local Whisper/RAG 管理不进入 Lite 主设置。
+              Sottura 保留 Assistant、STT、设备、快捷键、外观与 Skills；上游的 Calendar、付费/Trial、云服务与本地模型管理不进入当前设置。
             </div>
           </aside>
 
@@ -462,7 +462,7 @@ export default function LiteSettingsOverlay({ isOpen, onClose, initialTab }: Pro
                     <label className="block"><span className="mb-2 flex items-center justify-between text-xs font-medium text-text-secondary"><span>会议悬浮窗透明度</span><span>{Math.round(overlayOpacity * 100)}%</span></span><input type="range" min="0.35" max="1" step="0.01" value={overlayOpacity} onChange={(e) => updateOpacity(Number(e.target.value))} className="w-full" /></label>
                   </div>
                 </div>
-                <div className={cardClass}><h3 className="text-sm font-semibold text-text-primary">两个“可见性”概念</h3><div className="mt-3 space-y-2 text-xs leading-5 text-text-secondary"><p>• Launcher 的“可见 / 不可见”只控制<strong className="text-text-primary">能否被截图/屏幕共享捕获</strong>。</p><p>• 会议顶部的 Hide / Show 只控制<strong className="text-text-primary">你自己是否展开会议面板</strong>，与截图保护相互独立。</p><p>• Lite 的 Hide 现在会保留顶部 Show 恢复按钮，不再把整个会议窗口从桌面上永久藏掉。</p></div></div>
+                <div className={cardClass}><h3 className="text-sm font-semibold text-text-primary">两个“可见性”概念</h3><div className="mt-3 space-y-2 text-xs leading-5 text-text-secondary"><p>• Launcher 的“可见 / 不可见”只控制<strong className="text-text-primary">能否被截图/屏幕共享捕获</strong>。</p><p>• 会议顶部的 Hide / Show 只控制<strong className="text-text-primary">你自己是否展开会议面板</strong>，与截图保护相互独立。</p><p>• Sottura 的 Hide 会保留顶部 Show 恢复按钮，不会把整个会议窗口从桌面上永久藏掉。</p></div></div>
               </div>
             )}
 

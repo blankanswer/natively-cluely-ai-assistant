@@ -1,5 +1,5 @@
-name: Lite CN Build
-# Standalone cleanup gate 2: upstream-only tests, release tooling, and repo metadata removed.
+name: Sottura Build
+# Standalone cleanup gate 3: independent Sottura branding and application identity.
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
       - 'src/**'
       - 'electron/**'
       - 'native-module/**'
-      - 'assets/lite-icon.svg'
+      - 'assets/sottura-icon.svg'
       - 'build/entitlements.mac.adhoc.plist'
       - 'package.json'
       - 'package-lock.json'
@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout Lite branch
+      - name: Checkout Sottura branch
         uses: actions/checkout@v4
         with:
           submodules: false
@@ -74,20 +74,22 @@ jobs:
           node scripts/rebuild-native-electron.js
           node scripts/verify-native-arch.js
 
-      - name: Build Lite renderer
+      - name: Build Sottura renderer
         shell: bash
-        run: npm run build:lite:renderer
+        run: npm run build:sottura:renderer
 
-      - name: Build Lite Electron main process
+      - name: Build Sottura Electron main process
         shell: bash
-        run: npm run build:lite:electron
+        run: npm run build:sottura:electron
 
-      - name: Package Lite CN
+      - name: Package Sottura
         shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          SOTTURA_BUILD: '1'
+          # Compatibility flag used by the current Lite-derived build transforms.
           NATIVELY_LITE_CN: '1'
-        run: npm run package:lite
+        run: npm run package:sottura
 
       - name: Verify packaged macOS app and ZIP
         if: runner.os == 'macOS'
@@ -95,9 +97,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          APP="$(find release -maxdepth 2 -type d -name 'Natively Lite CN.app' -print -quit)"
+          APP="$(find release -maxdepth 2 -type d -name 'Sottura.app' -print -quit)"
           if [ -z "$APP" ]; then
-            echo 'Natively Lite CN.app not found under release/' >&2
+            echo 'Sottura.app not found under release/' >&2
             exit 1
           fi
 
@@ -108,7 +110,7 @@ jobs:
           ENTITLEMENTS="$(codesign -d --entitlements :- "$APP" 2>/dev/null || true)"
           printf '%s\n' "$ENTITLEMENTS"
           if printf '%s' "$ENTITLEMENTS" | grep -q 'keychain-access-groups'; then
-            echo 'Ad-hoc Lite app must not claim restricted keychain-access-groups entitlement.' >&2
+            echo 'Ad-hoc Sottura app must not claim restricted keychain-access-groups entitlement.' >&2
             exit 1
           fi
 
@@ -118,19 +120,19 @@ jobs:
             exit 1
           fi
 
-          rm -rf /tmp/natively-lite-zip-smoke
-          mkdir -p /tmp/natively-lite-zip-smoke
-          ditto -x -k "$ZIP" /tmp/natively-lite-zip-smoke
+          rm -rf /tmp/sottura-zip-smoke
+          mkdir -p /tmp/sottura-zip-smoke
+          ditto -x -k "$ZIP" /tmp/sottura-zip-smoke
 
-          ZIP_APP="$(find /tmp/natively-lite-zip-smoke -maxdepth 2 -type d -name 'Natively Lite CN.app' -print -quit)"
+          ZIP_APP="$(find /tmp/sottura-zip-smoke -maxdepth 2 -type d -name 'Sottura.app' -print -quit)"
           if [ -z "$ZIP_APP" ]; then
-            echo 'Natively Lite CN.app not found after ZIP extraction' >&2
+            echo 'Sottura.app not found after ZIP extraction' >&2
             exit 1
           fi
 
           echo "Verifying extracted ZIP app: $ZIP_APP"
           codesign --verify --deep --strict --verbose=4 "$ZIP_APP"
-          file "$ZIP_APP/Contents/MacOS/Natively Lite CN"
+          file "$ZIP_APP/Contents/MacOS/Sottura"
 
       - name: Show package sizes
         if: always()
@@ -145,7 +147,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: natively-lite-cn-${{ matrix.label }}
+          name: sottura-${{ matrix.label }}
           path: |
             release/*.exe
             release/*.zip

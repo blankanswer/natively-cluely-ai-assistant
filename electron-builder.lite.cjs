@@ -1,11 +1,11 @@
 /**
- * Lite CN packaging profile.
+ * Sottura packaging profile.
  *
- * This is intentionally independent from the upstream release/signing flow:
+ * This remains intentionally independent from the upstream release/signing flow:
  * - keeps native microphone/system-audio capture
  * - does not bundle local model payloads
  * - does not emit updater metadata
- * - builds only the runner's current architecture in experimental CI
+ * - builds only the runner's current architecture in CI
  */
 const base = require('./package.json').build;
 
@@ -15,24 +15,21 @@ const isModelsResource = (entry) => {
 };
 
 const currentArch = process.arch === 'arm64' ? 'arm64' : 'x64';
-const isMacBuildHost = process.platform === 'darwin';
 
 module.exports = {
   ...base,
-  // Do NOT reuse upstream's com.electron.meeting-notes identity on macOS.
-  // macOS TCC / LaunchServices key state off bundle identity + signing
-  // requirement, so a dedicated Lite id prevents an upstream install or an
-  // older ad-hoc test build from poisoning Screen Recording/Microphone state.
-  // Keep Windows/Linux on the existing id so their currently-working install
-  // identity and NSIS behavior do not change as part of a macOS-only fix.
-  appId: isMacBuildHost ? 'com.blankanswer.natively-lite-cn' : base.appId,
-  productName: 'Natively Lite CN',
+  // Sottura has its own application identity. Do not reuse the upstream bundle
+  // id: macOS TCC / LaunchServices key permission state off bundle identity and
+  // signing requirement, while Windows also benefits from a clean install id.
+  appId: 'com.blankanswer.sottura',
+  productName: 'Sottura',
   artifactName: '${productName}-${version}-${os}-${arch}.${ext}',
   generateUpdatesFilesForAllChannels: false,
   publish: null,
   extraMetadata: {
     ...(base.extraMetadata || {}),
-    nativelyLiteCn: true,
+    nativelySigned: false,
+    sotturaBuild: true,
   },
   extraResources: (base.extraResources || []).filter((entry) => !isModelsResource(entry)),
   asarUnpack: (base.asarUnpack || []).filter((pattern) => {
@@ -47,18 +44,24 @@ module.exports = {
   }),
   mac: {
     ...(base.mac || {}),
-    icon: 'tmp/lite-icon.png',
+    icon: 'tmp/sottura-icon.png',
     identity: null,
     target: [{ target: 'zip', arch: [currentArch] }],
+    extendInfo: {
+      ...((base.mac && base.mac.extendInfo) || {}),
+      NSScreenCaptureUsageDescription: 'Sottura needs Screen Recording permission to capture system audio and screenshots.',
+      NSMicrophoneUsageDescription: 'Sottura needs microphone access for speech transcription.',
+      NSAudioCaptureUsageDescription: 'Sottura needs system audio access for speech transcription.',
+    },
   },
   win: {
     ...(base.win || {}),
-    icon: 'tmp/lite-icon.png',
+    icon: 'tmp/sottura-icon.png',
     target: [{ target: 'nsis', arch: [currentArch] }],
   },
   linux: {
     ...(base.linux || {}),
-    icon: 'tmp/lite-icon.png',
+    icon: 'tmp/sottura-icon.png',
     target: [{ target: 'AppImage', arch: [currentArch] }],
   },
 };
